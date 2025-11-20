@@ -1,0 +1,10 @@
+{
+  "name": "wide_conv",
+  "input_shape": [3,32,32],
+  "num_classes": 10,
+  "backbone": "convnet",
+  "stages": [
+    {"type":"conv_block", "filters": 64, "depth": 2, "kernel":3},
+    {"type":"conv_block", "filters": 128, "depth": 1, "kernel":3}
+  ]
+}

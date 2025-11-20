@@ -1,0 +1,12 @@
+{
+  "name": "conv_small",
+  "input_shape": [3,32,32],
+  "num_classes": 10,
+  "backbone": "convnet",
+  "stages": [
+    {"type":"conv_block", "filters": 16, "depth": 1, "kernel":3},
+    {"type":"conv_block", "filters": 32, "depth": 1, "kernel":3},
+    {"type":"conv_block", "filters": 64, "depth": 1, "kernel":3}
+  ],
+  "head": {"type": "linear"}
+}
