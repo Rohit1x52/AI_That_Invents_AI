@@ -1,0 +1,9 @@
+torch>=1.13
+torchvision
+hydra-core>=1.2
+omegaconf
+mlflow        
+pytest
+numpy
+tqdm
+fvcore        

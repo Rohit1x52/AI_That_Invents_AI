@@ -1,0 +1,23 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "ProblemSpec",
+  "type": "object",
+  "required": ["task", "dataset", "target_device", "constraints", "objectives"],
+  "properties": {
+    "task": { "type": "string" },
+    "dataset": { "type": "string" },
+    "target_device": { "type": "string" },
+    "constraints": {
+      "type": "object",
+      "properties": {
+        "latency_ms": { "type": "number" },
+        "params_max": { "type": "number" }
+      },
+      "required": ["latency_ms", "params_max"]
+    },
+    "objectives": {
+      "type": "array",
+      "items": { "type": "string" }
+    }
+  }
+}
