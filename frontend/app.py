@@ -1,4 +1,3 @@
-"""Streamlit frontend for AI That Invents AI - Phase 1 MVP Demo"""
 import streamlit as st
 import json
 from pathlib import Path
@@ -39,7 +38,7 @@ st.markdown("Interactive demo: blueprint → model → validate → train → ev
 
 # Sidebar controls
 with st.sidebar:
-    st.header("⚙️ Controls")
+    st.header(" Controls")
     
     # Blueprint selection
     bpaths = list_blueprints()
@@ -47,10 +46,10 @@ with st.sidebar:
         st.error("No blueprints found in examples/blueprints. Add JSON files and reload.")
         st.stop()
     
-    selection = st.selectbox("📋 Choose blueprint", bpaths, format_func=lambda p: p.name)
+    selection = st.selectbox(" Choose blueprint", bpaths, format_func=lambda p: p.name)
     
     st.divider()
-    st.subheader("🔧 Configuration")
+    st.subheader(" Configuration")
     use_synth = st.checkbox("Use synthetic data (fast)", value=True)
     epochs = st.number_input("Epochs", min_value=1, max_value=10, value=2)
     batch_size = st.number_input("Batch size", min_value=8, max_value=512, value=64, step=8)
@@ -59,17 +58,17 @@ with st.sidebar:
     device = st.selectbox("Device", options=device_options, index=1 if torch.cuda.is_available() else 0)
     
     st.divider()
-    st.subheader("🎯 Actions")
-    run_validate = st.button("✅ Validate Blueprint", use_container_width=True)
-    run_render = st.button("🏗️ Render Model", use_container_width=True)
-    run_train = st.button("🚀 Quick Train", use_container_width=True)
-    run_latency = st.button("⏱️ Measure Latency", use_container_width=True)
-    run_flops = st.button("📊 Compute FLOPs", use_container_width=True)
+    st.subheader(" Actions")
+    run_validate = st.button(" Validate Blueprint", use_container_width=True)
+    run_render = st.button(" Render Model", use_container_width=True)
+    run_train = st.button(" Quick Train", use_container_width=True)
+    run_latency = st.button("⏱ Measure Latency", use_container_width=True)
+    run_flops = st.button(" Compute FLOPs", use_container_width=True)
 
 # Load and display blueprint JSON
 try:
     bp_json = load_blueprint(selection)
-    st.subheader("📄 Blueprint JSON")
+    st.subheader(" Blueprint JSON")
     
     col1, col2 = st.columns([3, 1])
     with col1:
@@ -87,13 +86,13 @@ if run_validate:
     with st.spinner("Validating blueprint..."):
         try:
             meta = validate_blueprint_dict(bp_json, device="cpu")
-            st.success("✅ Validation passed!")
+            st.success(" Validation passed!")
             if meta:
                 st.json(meta)
         except AssertionError as e:
-            st.error(f"❌ Validation failed: {e}")
+            st.error(f" Validation failed: {e}")
         except Exception as e:
-            st.error(f"❌ Unexpected error during validation: {e}")
+            st.error(f" Unexpected error during validation: {e}")
 
 # Render
 if run_render:
@@ -102,19 +101,19 @@ if run_render:
             bp = Blueprint.from_dict(bp_json)
             model = render_blueprint(bp)
             
-            st.subheader("🏗️ Model Architecture")
+            st.subheader(" Model Architecture")
             st.code(str(model), language="python")
             
             param_count = int(count_parameters(model))
             st.metric("Total Parameters", f"{param_count:,}")
             st.info(f"Model size: ~{param_count * 4 / (1024**2):.2f} MB (float32)")
         except Exception as e:
-            st.error(f"❌ Render failed: {e}")
+            st.error(f" Render failed: {e}")
             st.exception(e)
 
 # Quick train
 if run_train:
-    st.subheader("🚀 Training Progress")
+    st.subheader(" Training Progress")
     progress_bar = st.progress(0)
     status_text = st.empty()
     
@@ -202,11 +201,11 @@ if run_train:
                     torch.save(model.state_dict(), ckpt_path)
             progress_bar.progress(1.0)
             status_text.text("Training complete!")
-            st.success(f"✅ Training finished! Best validation accuracy: {best_val:.2%}")
-            st.info(f"💾 Checkpoint saved to: `{ckpt_path.name}`")
+            st.success(f" Training finished! Best validation accuracy: {best_val:.2%}")
+            st.info(f" Checkpoint saved to: `{ckpt_path.name}`")
             st.balloons()
         except Exception as e:
-            st.error(f"❌ Training failed: {e}")
+            st.error(f" Training failed: {e}")
             st.exception(e)
 
 # Latency
@@ -217,7 +216,7 @@ if run_latency:
             model = render_blueprint(bp)
             results = measured_latency_device_list(model, bp.input_shape, devices=("cpu", "cuda"))
             
-            st.subheader("⏱️ Latency Results")
+            st.subheader("⏱ Latency Results")
             if isinstance(results, dict):
                 for device_name, latency in results.items():
                     if latency is None:
@@ -227,7 +226,7 @@ if run_latency:
             else:
                 st.json(results)
         except Exception as e:
-            st.error(f"❌ Latency measurement failed: {e}")
+            st.error(f" Latency measurement failed: {e}")
             st.exception(e)
 
 # FLOPs
@@ -238,7 +237,7 @@ if run_flops:
             model = render_blueprint(bp)
             flops = compute_flops(model, tuple(bp.input_shape))
             
-            st.subheader("📊 FLOPs Analysis")
+            st.subheader("FLOPs Analysis")
             if flops:
                 st.metric("Total FLOPs", f"{flops:,}")
                 st.info(f"Approximately {flops / 1e9:.2f} GFLOPs")
