@@ -91,6 +91,10 @@ AI_That_Invents_AI/
 │   │   ├── flops_utils.py   # FLOPs computation
 │   │   └── __init__.py
 │   │
+│   ├── 🎓 trainer/          # Training pipeline
+│   │   ├── train.py         # Training logic
+│   │   └── __init__.py
+│   │
 │   ├── 📋 spec/             # Specification schema
 │   │   ├── spec_schema.json # JSON schema definitions
 │   │   ├── parser.py        # Spec parser
@@ -104,12 +108,17 @@ AI_That_Invents_AI/
 │       ├── blueprint_wideconv.json
 │       └── blueprint_mixed.json
 │
+├── 🖥️ frontend/            # Web interface
+│   └── app.py              # Streamlit application
+│
 ├── 🧪 tests/               # Unit & integration tests
-│   └── unit/
+│   ├── unit/
+│   └── conftest.py
 │
 ├── 📓 notebooks/           # Jupyter notebooks
 │   └── train_blueprint_mvp.ipynb
 │
+├── 🚀 run_example.py       # Quick start training script
 ├── 📖 README.md
 ├── 📦 requirements.txt
 ├── 🚫 .gitignore
@@ -118,9 +127,88 @@ AI_That_Invents_AI/
 
 ---
 
+## 🚀 Installation
+
 ### Prerequisites
 - Python 3.8 or higher
 - pip package manager
+
+### Setup
+
+1. **Clone the repository**
+```bash
+git clone https://github.com/Rohit1x52/AI_That_Invents_AI.git
+cd AI_That_Invents_AI
+```
+
+2. **Create virtual environment**
+```bash
+python -m venv AIinventor
+# Windows
+.\AIinventor\Scripts\Activate.ps1
+# Linux/Mac
+source AIinventor/bin/activate
+```
+
+3. **Install dependencies**
+```bash
+pip install -r requirements.txt
+```
+
+---
+
+## 🎯 Quick Start
+
+### Option 1: Run Training Script
+```bash
+# Windows
+.\AIinventor\Scripts\python.exe run_example.py
+
+# Linux/Mac
+python run_example.py
+```
+
+This will:
+- ✅ Load a blueprint from `examples/blueprints/`
+- ✅ Validate the architecture
+- ✅ Render the PyTorch model
+- ✅ Train for 3 epochs on synthetic data
+- ✅ Display metrics and save checkpoints
+
+### Option 2: Interactive Web Interface
+```bash
+streamlit run frontend/app.py
+```
+
+Features:
+- 🖱️ Interactive blueprint selection
+- ⚙️ Configurable training parameters
+- 📊 Real-time training progress
+- 📈 Latency and FLOPs measurement
+- 💾 Model checkpoint management
+
+### Option 3: Using Jupyter Notebook
+```bash
+jupyter notebook notebooks/train_blueprint_mvp.ipynb
+```
+
+### Command Line Usage
+```python
+from src.codegen.blueprint import Blueprint
+from src.codegen.renderer import render_blueprint
+import json
+
+# Load blueprint
+with open("examples/blueprints/blueprint_convnet.json") as f:
+    bp_dict = json.load(f)
+
+# Create model
+blueprint = Blueprint.from_dict(bp_dict)
+model = render_blueprint(blueprint)
+
+# Evaluate
+print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
+```
 
 ---
 
@@ -198,6 +286,8 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 - Built with PyTorch
 - Inspired by neural architecture search research
 - FLOPs computation via fvcore
+- MLflow for experiment tracking
+- Streamlit for web interface
 
 ---
 
@@ -205,6 +295,6 @@ Contributions are welcome! Please feel free to submit a Pull Request.
 
 **⭐ Star this repo if you find it useful!**
 
-Made with ❤️ by the Rohit Ranjan Kumar
+Made with ❤️ by Rohit Ranjan Kumar
 
 </div>

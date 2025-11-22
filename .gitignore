@@ -42,6 +42,7 @@ saved_models/
 # Jupyter Notebook
 .ipynb_checkpoints
 *.ipynb_checkpoints/
+.virtual_documents/
 
 # IDEs
 .vscode/
@@ -80,6 +81,7 @@ data/
 tmp/
 temp/
 *.tmp
+test_*.py
 
 # OS
 Thumbs.db
