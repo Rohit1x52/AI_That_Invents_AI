@@ -1,11 +1,118 @@
 {
   "name": "mixed_small",
-  "input_shape": [3,32,32],
+  "description": "Small mixed-kernel convnet baseline with stem, batch-norm, training config, augmentations, regularization and NAS hints.",
+  "reference_preview": "/mnt/data/8f34c36c-559b-4c15-b614-a63eb3cbc018.png",
+  "input_shape": [3, 32, 32],
   "num_classes": 10,
   "backbone": "convnet",
+  "stem": {
+    "type": "conv",
+    "filters": 16,
+    "kernel": 3,
+    "stride": 1,
+    "padding": 1,
+    "activation": "relu",
+    "batch_norm": true
+  },
   "stages": [
-    {"type":"conv_block", "filters": 32, "depth": 1, "kernel":5},
-    {"type":"conv_block", "filters": 64, "depth": 1, "kernel":3}
+    {
+      "type": "conv_block",
+      "filters": 32,
+      "depth": 1,
+      "kernel": 5,
+      "stride": 1,
+      "padding": 2,
+      "batch_norm": true,
+      "activation": "relu",
+      "pool_after": "none"
+    },
+    {
+      "type": "conv_block",
+      "filters": 64,
+      "depth": 1,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "batch_norm": true,
+      "activation": "relu",
+      "pool_after": "max",
+      "pool_size": 2,
+      "dropout": 0.1
+    }
   ],
-  "quantize": false
+  "skip_connections": [],
+  "head": {
+    "pre_pool": { "type": "global_avg_pool" },
+    "fc": {
+      "type": "linear",
+      "units": 128,
+      "activation": "relu",
+      "batch_norm": true,
+      "dropout": 0.3
+    },
+    "classifier": { "type": "linear", "units": 10, "activation": "softmax" }
+  },
+  "loss": "cross_entropy",
+  "metrics": ["accuracy"],
+  "optimizer": {
+    "type": "adamw",
+    "lr": 0.001,
+    "weight_decay": 0.0005,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "amsgrad": false
+  },
+  "lr_schedule": {
+    "type": "cosine_decay",
+    "warmup_epochs": 3,
+    "total_epochs": 100,
+    "min_lr": 1e-6
+  },
+  "training": {
+    "epochs": 100,
+    "batch_size": 128,
+    "gradient_clip_norm": 1.0,
+    "mixed_precision": true,
+    "accumulate_grad_steps": 1,
+    "checkpoint": { "save_every": 5, "keep_best_k": 3, "save_ema_only": false },
+    "early_stopping": { "monitor": "val_accuracy", "patience": 12 }
+  },
+  "data": {
+    "dataset": "cifar10",
+    "num_workers": 6,
+    "normalize": {
+      "mean": [0.4914, 0.4822, 0.4465],
+      "std": [0.2470, 0.2435, 0.2616]
+    },
+    "augmentations": [
+      { "type": "random_crop", "size": 32, "padding": 4 },
+      { "type": "random_flip", "prob": 0.5 },
+      { "type": "random_cutout", "num_holes": 1, "hole_size": 8 },
+      { "type": "color_jitter", "brightness": 0.15, "contrast": 0.15, "saturation": 0.15 }
+    ]
+  },
+  "regularization": {
+    "dropout_default": 0.1,
+    "label_smoothing": 0.05,
+    "weight_decay": 0.0005
+  },
+  "quantize": {
+    "enabled": false,
+    "post_training": true,
+    "aware_training": false,
+    "target_dtype": "int8"
+  },
+  "constraints": {
+    "max_parameters": 2000000,
+    "max_flops": 200000000
+  },
+  "search_hints": {
+    "mutate": {
+      "filters": [16, 24, 32, 48, 64],
+      "kernel_sizes": [3, 5, 7],
+      "depth": [1, 2],
+      "dropout": [0.0, 0.1, 0.2]
+    },
+    "mutate_prob": 0.12
+  }
 }

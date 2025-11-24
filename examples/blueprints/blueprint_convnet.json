@@ -1,12 +1,198 @@
 {
-  "name": "conv_small",
-  "input_shape": [3,32,32],
+  "name": "conv_medium",
+  "description": "Medium-sized convnet with SiLU, bottleneck residual blocks, SE, RandAugment, MixUp/CutMix, EMA, and QAT-ready design.",
+  "reference_preview": "/mnt/data/8f34c36c-559b-4c15-b614-a63eb3cbc018.png",
+
+  "input_shape": [3, 32, 32],
   "num_classes": 10,
-  "backbone": "convnet",
+  "backbone": "resnet_custom",
+
+  "stem": {
+    "type": "conv",
+    "filters": 32,
+    "kernel": 3,
+    "stride": 1,
+    "padding": 1,
+    "activation": "silu",
+    "batch_norm": true
+  },
+
   "stages": [
-    {"type":"conv_block", "filters": 16, "depth": 1, "kernel":3},
-    {"type":"conv_block", "filters": 32, "depth": 1, "kernel":3},
-    {"type":"conv_block", "filters": 64, "depth": 1, "kernel":3}
+    {
+      "id": "stage_0",
+      "type": "bottleneck_block",
+      "filters": 32,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 1,
+      "padding": 1,
+      "activation": "silu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25
+    },
+    {
+      "id": "stage_1",
+      "type": "bottleneck_block",
+      "filters": 64,
+      "depth": 3,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "activation": "silu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25,
+      "drop_path": 0.05
+    },
+    {
+      "id": "stage_2",
+      "type": "bottleneck_block",
+      "filters": 128,
+      "depth": 3,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "activation": "silu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25,
+      "drop_path": 0.10
+    },
+    {
+      "id": "stage_3",
+      "type": "bottleneck_block",
+      "filters": 256,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "activation": "silu",
+      "batch_norm": true,
+      "drop_path": 0.15
+    }
   ],
-  "head": {"type": "linear"}
+
+  "skip_connections": [
+    { "from_stem": true, "to_stage": 0, "type": "residual", "project": false },
+    { "from_stage": 0, "to_stage": 1, "type": "residual", "project": true },
+    { "from_stage": 1, "to_stage": 2, "type": "residual", "project": true },
+    { "from_stage": 2, "to_stage": 3, "type": "residual", "project": true }
+  ],
+
+  "head": {
+    "pre_pool": { "type": "global_avg_pool" },
+    "flatten": true,
+    "fc": {
+      "type": "linear",
+      "units": 512,
+      "activation": "silu",
+      "batch_norm": true,
+      "dropout": 0.2
+    },
+    "classifier": {
+      "type": "linear",
+      "units": 10,
+      "activation": "softmax"
+    }
+  },
+
+  "loss": {
+    "type": "soft_target_cross_entropy",
+    "label_smoothing": 0.1
+  },
+
+  "metrics": ["accuracy", "top_5_accuracy"],
+
+  "optimizer": {
+    "type": "adamw",
+    "lr": 0.0015,
+    "weight_decay": 0.01,
+    "betas": [0.9, 0.999],
+    "eps": 1e-8,
+    "amsgrad": false
+  },
+
+  "lr_schedule": {
+    "type": "cosine_decay",
+    "warmup_epochs": 8,
+    "total_epochs": 200,
+    "min_lr": 1e-5
+  },
+
+  "training": {
+    "epochs": 200,
+    "batch_size": 256,
+    "gradient_clip_norm": 1.0,
+    "mixed_precision": true,
+    "use_ema": true,
+    "ema_decay": 0.9998,
+    "accumulate_grad_steps": 1,
+
+    "checkpoint": {
+      "save_every": 10,
+      "keep_best_k": 5,
+      "save_ema_only": false
+    },
+
+    "early_stopping": {
+      "monitor": "val_accuracy",
+      "patience": 25
+    }
+  },
+
+  "data": {
+    "dataset": "cifar10",
+    "num_workers": 8,
+
+    "normalize": {
+      "mean": [0.4914, 0.4822, 0.4465],
+      "std": [0.2470, 0.2435, 0.2616]
+    },
+
+    "augmentations": [
+      { "type": "rand_augment", "num_ops": 2, "magnitude": 9 },
+      { "type": "random_crop", "size": 32, "padding": 4 },
+      { "type": "random_flip", "prob": 0.5 },
+      { "type": "random_erase", "prob": 0.25, "scale": [0.02, 0.33], "ratio": [0.3, 3.3] }
+    ],
+
+    "mixup_cutmix": {
+      "enabled": true,
+      "mixup_alpha": 0.8,
+      "cutmix_alpha": 1.0,
+      "prob": 1.0,
+      "switch_prob": 0.5
+    }
+  },
+
+  "regularization": {
+    "dropout_fc": 0.2,
+    "stochastic_depth_rate": 0.20,
+    "weight_decay": 0.01
+  },
+
+  "quantize": {
+    "enabled": true,
+    "post_training": false,
+    "aware_training": true,
+    "target_dtype": "int8",
+    "engine": "qnnpack"
+  },
+
+  "constraints": {
+    "max_parameters": 4500000,
+    "max_flops": 550000000
+  },
+
+  "search_hints": {
+    "mutate": {
+      "filters": [32, 64, 96, 128, 256],
+      "kernel_sizes": [3, 5, 7],
+      "depth": [2, 3, 4, 6],
+      "activations": ["relu", "silu", "gelu"],
+      "se_ratio": [0.0, 0.25]
+    },
+    "mutate_prob": 0.2
+  }
 }

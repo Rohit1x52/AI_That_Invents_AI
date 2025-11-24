@@ -1,10 +1,146 @@
 {
   "name": "wide_conv",
-  "input_shape": [3,32,32],
+  "description": "Wide convolutional baseline with deeper early layers, batch-norm, regularization, and NAS-friendly configuration.",
+  "reference_preview": "/mnt/data/8f34c36c-559b-4c15-b614-a63eb3cbc018.png",
+
+  "input_shape": [3, 32, 32],
   "num_classes": 10,
   "backbone": "convnet",
+
+  "stem": {
+    "type": "conv",
+    "filters": 32,
+    "kernel": 3,
+    "stride": 1,
+    "padding": 1,
+    "activation": "relu",
+    "batch_norm": true
+  },
+
   "stages": [
-    {"type":"conv_block", "filters": 64, "depth": 2, "kernel":3},
-    {"type":"conv_block", "filters": 128, "depth": 1, "kernel":3}
-  ]
+    {
+      "type": "conv_block",
+      "filters": 64,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 1,
+      "padding": 1,
+      "batch_norm": true,
+      "activation": "relu",
+      "dropout": 0.05
+    },
+    {
+      "type": "conv_block",
+      "filters": 128,
+      "depth": 1,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "batch_norm": true,
+      "activation": "relu",
+      "pool_after": "max",
+      "pool_size": 2,
+      "dropout": 0.10
+    }
+  ],
+
+  "skip_connections": [],
+
+  "head": {
+    "pre_pool": { "type": "global_avg_pool" },
+    "flatten": true,
+
+    "fc": {
+      "type": "linear",
+      "units": 256,
+      "activation": "relu",
+      "batch_norm": true,
+      "dropout": 0.3
+    },
+
+    "classifier": {
+      "type": "linear",
+      "units": 10,
+      "activation": "softmax"
+    }
+  },
+
+  "loss": "cross_entropy",
+  "metrics": ["accuracy"],
+
+  "optimizer": {
+    "type": "adamw",
+    "lr": 0.0012,
+    "weight_decay": 0.001,
+    "betas": [0.9, 0.999]
+  },
+
+  "lr_schedule": {
+    "type": "cosine_decay",
+    "warmup_epochs": 4,
+    "total_epochs": 120,
+    "min_lr": 1e-6
+  },
+
+  "training": {
+    "epochs": 120,
+    "batch_size": 128,
+    "mixed_precision": true,
+    "gradient_clip_norm": 1.0,
+
+    "checkpoint": {
+      "save_every": 5,
+      "keep_best_k": 3
+    },
+
+    "early_stopping": {
+      "monitor": "val_accuracy",
+      "patience": 25
+    }
+  },
+
+  "data": {
+    "dataset": "cifar10",
+    "num_workers": 8,
+
+    "normalize": {
+      "mean": [0.4914, 0.4822, 0.4465],
+      "std": [0.2470, 0.2435, 0.2616]
+    },
+
+    "augmentations": [
+      { "type": "random_crop", "size": 32, "padding": 4 },
+      { "type": "random_flip", "prob": 0.5 },
+      { "type": "random_cutout", "num_holes": 1, "hole_size": 8 },
+      { "type": "color_jitter", "brightness": 0.2, "contrast": 0.2, "saturation": 0.2 }
+    ]
+  },
+
+  "regularization": {
+    "dropout_default": 0.1,
+    "label_smoothing": 0.05,
+    "weight_decay": 0.001
+  },
+
+  "quantize": {
+    "enabled": false,
+    "post_training": true,
+    "aware_training": false,
+    "target_dtype": "int8"
+  },
+
+  "constraints": {
+    "max_parameters": 4000000,
+    "max_flops": 450000000
+  },
+
+  "search_hints": {
+    "mutate": {
+      "filters": [64, 96, 128, 160, 192],
+      "kernel_sizes": [3, 5],
+      "depth": [1, 2, 3],
+      "dropout": [0.0, 0.1, 0.2]
+    },
+    "mutate_prob": 0.15
+  }
 }
