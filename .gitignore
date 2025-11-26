@@ -1,12 +1,18 @@
-# Python
+#############################################
+# PYTHON BASICS
+#############################################
 __pycache__/
 *.py[cod]
 *$py.class
 *.so
 .Python
+
+#############################################
+# BUILD / DIST
+#############################################
 build/
-develop-eggs/
 dist/
+develop-eggs/
 downloads/
 eggs/
 .eggs/
@@ -23,7 +29,9 @@ share/python-wheels/
 *.egg
 MANIFEST
 
-# Virtual Environment
+#############################################
+# VIRTUAL ENVIRONMENTS
+#############################################
 AIinventor/
 venv/
 env/
@@ -31,20 +39,29 @@ ENV/
 env.bak/
 venv.bak/
 
-# PyTorch
+#############################################
+# TORCH + MODEL FILES
+#############################################
 *.pth
 *.pt
 *.ckpt
+
+# Checkpoints / Saved models
 checkpoints/
 models/
 saved_models/
+logs/**/best.pth
 
-# Jupyter Notebook
-.ipynb_checkpoints
+#############################################
+# NOTEBOOKS
+#############################################
+.ipynb_checkpoints/
 *.ipynb_checkpoints/
 .virtual_documents/
 
-# IDEs
+#############################################
+# IDE & EDITOR JUNK
+#############################################
 .vscode/
 .idea/
 *.swp
@@ -52,43 +69,84 @@ saved_models/
 *~
 .DS_Store
 
-# Testing
+#############################################
+# TEST ARTIFACTS
+#############################################
 .pytest_cache/
 .coverage
 htmlcov/
 .tox/
 .nox/
 
-# MLflow
+#############################################
+# MLFLOW
+#############################################
 mlruns/
 mlartifacts/
 
-# Logs
+#############################################
+# LOGS
+#############################################
 logs/
 *.log
 *.out
 
-# Data
+#############################################
+# DATA — IGNORE RAW DATA BUT KEEP BLUEPRINTS
+#############################################
 data/
-*.csv
 *.json.gz
 *.pkl
 *.pickle
 *.h5
 *.hdf5
 
-# Temporary files
+# KEEP example blueprints
+!examples/blueprints/*.json
+
+#############################################
+# DATABASE (DKB)
+#############################################
+*.sqlite
+*.db
+
+# But keep the official DKB schema if someday needed
+!src/dkb/*.sql
+
+#############################################
+# FRONTEND BUILDS
+#############################################
+frontend/__pycache__/
+frontend/.streamlit/
+frontend/cache/
+frontend/uploads/
+
+#############################################
+# CAMPAIGN OUTPUTS (PHASE-2)
+#############################################
+campaign_outputs/
+campaign_logs/
+results/
+experiments/
+examples/outputs/
+
+#############################################
+# KEEP IMPORTANT PUBLIC ARTIFACTS (Phase-2)
+#############################################
+!champions.json
+!champions.csv
+!pareto.png
+
+#############################################
+# TEMP FILES
+#############################################
 tmp/
 temp/
 *.tmp
-test_*.py
 
-# OS
+#############################################
+# OS FILES
+#############################################
 Thumbs.db
 .Spotlight-V100
 .Trashes
-
-# Project specific
-examples/outputs/
-experiments/
-results/

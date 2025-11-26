@@ -1,0 +1,47 @@
+[
+  {
+    "arch_id": 11,
+    "name": "conv_medium_m488",
+    "params": 46400,
+    "flops": 928000,
+    "val_acc": 0.1015625,
+    "latency_cpu_ms": 13.134185473124187,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 9,
+    "name": "conv_medium_m4012",
+    "params": 52800,
+    "flops": 1056000,
+    "val_acc": 0.1015625,
+    "latency_cpu_ms": 11.432393391927084,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 12,
+    "name": "conv_medium_m9195",
+    "params": 43200,
+    "flops": 864000,
+    "val_acc": 0.099609375,
+    "latency_cpu_ms": 12.597926457722982,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 8,
+    "name": "conv_medium",
+    "params": 48000,
+    "flops": 960000,
+    "val_acc": 0.095703125,
+    "latency_cpu_ms": 11.1448605855306,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 10,
+    "name": "conv_medium_m8935",
+    "params": 43200,
+    "flops": 864000,
+    "val_acc": 0.087890625,
+    "latency_cpu_ms": 10.286951065063477,
+    "latency_cuda_ms": null
+  }
+]

@@ -155,6 +155,10 @@ def train_one_model(cfg: Dict[str, Any]) -> Dict[str, Any]:
                 correct += preds.eq(labels).sum().item()
         val_acc = (correct / total) if total > 0 else 0.0
 
+        # Print progress
+        avg_train_loss = running_loss / len(train_loader)
+        print(f"  Epoch {epoch+1}/{epochs} - train_loss: {avg_train_loss:.4f}, val_acc: {val_acc:.4f}")
+
         # Log
         if _MLFLOW:
             mlflow.log_metric("val_acc", float(val_acc), step=epoch)
@@ -174,6 +178,7 @@ def train_one_model(cfg: Dict[str, Any]) -> Dict[str, Any]:
             counter += 1
             if counter >= patience:
                 # early stop
+                print(f"  Early stopping at epoch {epoch+1}")
                 break
 
     # After training: measure latency & FLOPs (best-effort)

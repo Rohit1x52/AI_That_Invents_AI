@@ -1,0 +1,92 @@
+[
+  {
+    "arch_id": 39,
+    "name": "conv_medium_m9195",
+    "params": 1351210,
+    "flops": 27024200,
+    "val_acc": 0.7981,
+    "latency_cpu_ms": 15.70885976155599,
+    "latency_cuda_ms": 0.9358088175455729
+  },
+  {
+    "arch_id": 29,
+    "name": "conv_medium",
+    "params": null,
+    "flops": null,
+    "val_acc": 0.7929,
+    "latency_cpu_ms": 11.669532457987467,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 38,
+    "name": "conv_medium_m488",
+    "params": 1343866,
+    "flops": 26877320,
+    "val_acc": 0.7883,
+    "latency_cpu_ms": 16.26323858896891,
+    "latency_cuda_ms": 1.1923948923746743
+  },
+  {
+    "arch_id": 36,
+    "name": "conv_medium_m4012",
+    "params": 1369770,
+    "flops": 27395400,
+    "val_acc": 0.765,
+    "latency_cpu_ms": 14.251391092936197,
+    "latency_cuda_ms": 1.2735684712727866
+  },
+  {
+    "arch_id": 37,
+    "name": "conv_medium_m8935",
+    "params": 1323498,
+    "flops": 26469960,
+    "val_acc": 0.744,
+    "latency_cpu_ms": 13.215406735738119,
+    "latency_cuda_ms": 0.9970903396606446
+  },
+  {
+    "arch_id": 11,
+    "name": "conv_medium_m488",
+    "params": 46400,
+    "flops": 928000,
+    "val_acc": 0.1015625,
+    "latency_cpu_ms": 13.134185473124187,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 9,
+    "name": "conv_medium_m4012",
+    "params": 52800,
+    "flops": 1056000,
+    "val_acc": 0.1015625,
+    "latency_cpu_ms": 11.432393391927084,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 12,
+    "name": "conv_medium_m9195",
+    "params": 43200,
+    "flops": 864000,
+    "val_acc": 0.099609375,
+    "latency_cpu_ms": 12.597926457722982,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 8,
+    "name": "conv_medium",
+    "params": 48000,
+    "flops": 960000,
+    "val_acc": 0.095703125,
+    "latency_cpu_ms": 11.1448605855306,
+    "latency_cuda_ms": null
+  },
+  {
+    "arch_id": 10,
+    "name": "conv_medium_m8935",
+    "params": 43200,
+    "flops": 864000,
+    "val_acc": 0.087890625,
+    "latency_cpu_ms": 10.286951065063477,
+    "latency_cuda_ms": null
+  }
+]
