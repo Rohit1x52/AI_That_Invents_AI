@@ -1,0 +1,70 @@
+{
+  "name": "conv_se_baseline",
+  "description": "A clean SE-enhanced ConvNet/ResNet-style blueprint for CIFAR-10.",
+  "input_shape": [3, 32, 32],
+  "num_classes": 10,
+
+  "backbone": "resnet_custom",
+
+  "stem": {
+    "type": "conv",
+    "filters": 32,
+    "kernel": 3,
+    "stride": 1,
+    "padding": 1,
+    "activation": "relu",
+    "batch_norm": true
+  },
+
+  "stages": [
+    {
+      "id": "stage0",
+      "type": "bottleneck_block",
+      "filters": 32,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 1,
+      "padding": 1,
+      "activation": "relu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25
+    },
+    {
+      "id": "stage1",
+      "type": "bottleneck_block",
+      "filters": 64,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "activation": "relu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25
+    },
+    {
+      "id": "stage2",
+      "type": "bottleneck_block",
+      "filters": 128,
+      "depth": 2,
+      "kernel": 3,
+      "stride": 2,
+      "padding": 1,
+      "activation": "relu",
+      "batch_norm": true,
+      "squeeze_excitation": true,
+      "se_ratio": 0.25
+    }
+  ],
+
+  "head": {
+    "pre_pool": { "type": "global_avg_pool" },
+    "flatten": true,
+    "classifier": {
+      "type": "linear",
+      "units": 10,
+      "activation": "softmax"
+    }
+  }
+}

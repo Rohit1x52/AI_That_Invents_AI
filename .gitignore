@@ -143,6 +143,17 @@ examples/outputs/
 tmp/
 temp/
 *.tmp
+test_*.py
+frontend_tmp_blueprint.json
+frontend_champs.json
+device_profiles.json
+
+#############################################
+# ENVIRONMENT VARIABLES
+#############################################
+.env
+.env.local
+.env.*.local
 
 #############################################
 # OS FILES

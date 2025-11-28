@@ -3,7 +3,7 @@ import copy
 
 from src.generator.heuristic import sample_candidates, estimate_params as heuristic_estimate
 from src.generator.predictor import ParamPredictor
-from src.generator.latency_model import LatencyModel
+from src.generator.latency_model import estimate_latency_from_blueprint
 
 # optional compute_flops utility (Phase-1: src.eval.flops_utils)
 try:
@@ -20,7 +20,7 @@ def sample_and_filter(seed_bp: Dict[str, Any],
                       mutation_mode: str = "balanced",
                       seed: Optional[int] = None) -> List[Dict[str, Any]]:
     predictor = ParamPredictor()
-    latency_model = LatencyModel()
+    latency_model = estimate_latency_from_blueprint()
 
     raw_cands = sample_candidates(seed_bp, n=n, seed=seed, params_max=None, mutation_mode=mutation_mode)
     out = []
@@ -43,7 +43,8 @@ def sample_and_filter(seed_bp: Dict[str, Any],
         cand["est_flops"] = est_flops
 
         # predict latency
-        est_latency_ms = latency_model.predict_latency_ms(est_flops, device=device)
+        lat_result = estimate_latency_from_blueprint(cand, device=device)
+        est_latency_ms = lat_result.get("est_latency_ms")
         cand["est_latency_ms"] = est_latency_ms
 
         # filter by params and latency if provided

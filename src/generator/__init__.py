@@ -9,8 +9,7 @@ from .heuristic import (
     satisfies_constraints
 )
 from .predictor import ParamPredictor
-from .latency_model import LatencyModel
-# Import filtering last to avoid circular dependency
+from .latency_model import estimate_latency_from_blueprint, flops_to_ms
 from .filtering import sample_and_filter
 
 __all__ = [
@@ -20,6 +19,7 @@ __all__ = [
     "estimate_params",
     "satisfies_constraints",
     "ParamPredictor",
-    "LatencyModel",
+    "estimate_latency_from_blueprint",
+    "flops_to_ms",
     "sample_and_filter"
 ]
