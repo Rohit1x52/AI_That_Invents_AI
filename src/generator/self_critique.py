@@ -1,64 +1,101 @@
 import json
 import os
-from groq import Groq
+import re
+import logging
+from typing import Dict, Any, Optional
+
+try:
+    from groq import Groq
+    _HAS_GROQ = True
+except ImportError:
+    _HAS_GROQ = False
 
 CRITIQUE_PROMPT = """
-You are an AI Architecture Auditor.
+You are an expert Neural Architecture Search (NAS) Auditor.
 
-You are given a CNN blueprint in JSON form. Evaluate it in the following dimensions:
+Your Goal: Analyze the provided CNN Blueprint and produce an IMPROVED version.
 
-1. **Accuracy Potential**  
-   How strong is the architecture likely to be? (0-10)
+Evaluation Criteria:
+1. Accuracy Potential (0-10)
+2. Efficiency (Params/FLOPs) (0-10)
+3. Latency Expectation (0-10)
+4. Innovation (0-10)
+5. Flaws (List specific bottlenecks or design errors)
 
-2. **Efficiency (Params/FLOPs)**  
-   How lightweight and efficient is it? (0-10)
-
-3. **Latency Expectation**  
-   Estimate whether it will run fast on CPU & GPU. (0-10)
-
-4. **Innovation / Novelty**  
-   How unique or meaningful are the architectural choices? (0-10)
-
-5. **Design Flaws**  
-   Any obvious mistakes? (e.g., bottlenecks too heavy, too many filters, missing BN, etc.)
-
-6. **Overall Score**  
-   Weighted score (0-10). Your formula.
-
-Finally, propose **one improved blueprint** in JSON (only edit key parts, not full rewrite).
-
-Return format **EXACTLY**:
-
+Output Format:
+You must return ONLY valid JSON. Do not include preamble text.
 {
-  "scores": { ... },
-  "analysis": "...",
-  "improved_blueprint": { ... }
+  "scores": { "accuracy": 8, "efficiency": 7, "latency": 9, "innovation": 5, "overall": 7.5 },
+  "analysis": "Brief analysis of flaws...",
+  "improved_blueprint": { ... full valid blueprint json ... }
 }
 """
 
-def groq_client():
-    key = os.environ.get("GROQ_API_KEY")
-    if not key:
-        raise RuntimeError("GROQ_API_KEY not set")
-    return Groq(api_key=key)
+_GROQ_CLIENT = None
 
-def self_critique_blueprint(bp: dict) -> dict:
-    prompt = CRITIQUE_PROMPT + "\nBlueprint:\n" + json.dumps(bp, indent=2)
+def get_groq_client():
+    global _GROQ_CLIENT
+    if _GROQ_CLIENT is None:
+        key = os.environ.get("GROQ_API_KEY")
+        if key and _HAS_GROQ:
+            _GROQ_CLIENT = Groq(api_key=key)
+    return _GROQ_CLIENT
 
-    client = groq_client()
+def extract_json_content(text: str) -> str:
+    # 1. Try Markdown Code Block
+    match = re.search(r"```(?:json)?\s*(\{.*?\})\s*```", text, re.DOTALL)
+    if match:
+        return match.group(1)
+    
+    # 2. Try greedy brace matching
+    start = text.find("{")
+    end = text.rfind("}")
+    if start != -1 and end != -1:
+        return text[start:end+1]
+        
+    return text
 
-    resp = client.chat.completions.create(
-        model="llama-3.3-70b-versatile",
-        messages=[{"role": "user", "content": prompt}],
-        temperature=0.3,
-        max_tokens=1500,
-    )
+def self_critique_blueprint(bp: Dict[str, Any]) -> Dict[str, Any]:
+    client = get_groq_client()
+    
+    # Fallback if no API key or client
+    if not client:
+        logging.warning("Groq client unavailable. Returning dummy critique.")
+        return {
+            "scores": {"overall": 5.0},
+            "analysis": "No LLM critique available (Missing API Key).",
+            "improved_blueprint": bp 
+        }
 
-    text = resp.choices[0].message.content
+    full_prompt = f"{CRITIQUE_PROMPT}\n\nCURRENT BLUEPRINT:\n{json.dumps(bp, indent=2)}"
 
-    import re
-    m = re.search(r"(\{.*\})", text, re.S)
-    if not m:
-        raise RuntimeError("Did not receive JSON critique")
+    try:
+        response = client.chat.completions.create(
+            model="llama-3.3-70b-versatile",
+            messages=[
+                {"role": "system", "content": "You are a JSON-speaking AI architect."},
+                {"role": "user", "content": full_prompt}
+            ],
+            temperature=0.2, # Low temp for valid JSON
+            max_tokens=2000,
+            response_format={"type": "json_object"} # Force JSON mode if supported
+        )
+        
+        raw_text = response.choices[0].message.content
+        cleaned_json = extract_json_content(raw_text)
+        
+        data = json.loads(cleaned_json)
+        
+        # Validate structure
+        if "improved_blueprint" not in data:
+            data["improved_blueprint"] = bp 
+            
+        return data
 
-    return json.loads(m.group(1))
+    except Exception as e:
+        logging.error(f"Critique generation failed: {e}")
+        return {
+            "scores": {"overall": 0.0},
+            "analysis": f"Error during critique: {str(e)}",
+            "improved_blueprint": bp
+        }

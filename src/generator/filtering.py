@@ -1,64 +1,84 @@
-from typing import List, Dict, Any, Optional
 import copy
+import json
+import hashlib
+from typing import List, Dict, Any, Optional
+from concurrent.futures import ThreadPoolExecutor
 
-from src.generator.heuristic import sample_candidates, estimate_params as heuristic_estimate
-from src.generator.predictor import ParamPredictor
+from src.generator.heuristic import sample_candidates
+from src.generator.param_predictor import estimate_params
 from src.generator.latency_model import estimate_latency_from_blueprint
 
-# optional compute_flops utility (Phase-1: src.eval.flops_utils)
 try:
     from src.eval.flops_utils import compute_flops
     _HAS_FLOPS_UTIL = True
-except Exception:
+except ImportError:
     _HAS_FLOPS_UTIL = False
 
-def sample_and_filter(seed_bp: Dict[str, Any],
-                      n: int = 10,
-                      params_max: Optional[int] = None,
-                      latency_max_ms: Optional[float] = None,
-                      device: str = "cpu",
-                      mutation_mode: str = "balanced",
-                      seed: Optional[int] = None) -> List[Dict[str, Any]]:
-    predictor = ParamPredictor()
-    latency_model = estimate_latency_from_blueprint()
+def compute_arch_hash(bp: Dict[str, Any]) -> str:
+    relevant_keys = {"backbone", "stages", "head"}
+    subset = {k: v for k, v in bp.items() if k in relevant_keys}
+    s = json.dumps(subset, sort_keys=True)
+    return hashlib.md5(s.encode()).hexdigest()
 
-    raw_cands = sample_candidates(seed_bp, n=n, seed=seed, params_max=None, mutation_mode=mutation_mode)
-    out = []
-    for c in raw_cands:
-        cand = copy.deepcopy(c)
-        # estimate params
-        est_params = predictor.estimate_params(cand)
-        cand["est_params"] = est_params
+def evaluate_candidate(cand: Dict[str, Any], device: str) -> Dict[str, Any]:
+    cand["est_params"] = estimate_params(cand)
+    
+    if _HAS_FLOPS_UTIL:
+        try:
+            input_shape = tuple(cand.get("input_shape", [3, 32, 32]))
+            cand["est_flops"] = compute_flops(cand, input_shape)
+        except Exception:
+            cand["est_flops"] = 0
+    else:
+        cand["est_flops"] = 0
 
-        # estimate flops if utility available; fallback to heuristic: est_flops = est_params * 20
-        est_flops = None
-        if _HAS_FLOPS_UTIL:
-            try:
-                est_flops = compute_flops_from_blueprint(cand)
-            except Exception:
-                est_flops = None
-        if est_flops is None:
-            # crude fallback: multiply params by factor to get FLOPs (~20)
-            est_flops = int(est_params * 20)
-        cand["est_flops"] = est_flops
+    lat_res = estimate_latency_from_blueprint(cand, device=device)
+    cand["est_latency_ms"] = lat_res.get("est_latency_ms", 0.0)
+    cand["hash"] = compute_arch_hash(cand)
+    
+    return cand
 
-        # predict latency
-        lat_result = estimate_latency_from_blueprint(cand, device=device)
-        est_latency_ms = lat_result.get("est_latency_ms")
-        cand["est_latency_ms"] = est_latency_ms
+def sample_and_filter(
+    seed_bp: Dict[str, Any],
+    n: int = 10,
+    params_max: Optional[int] = None,
+    latency_max_ms: Optional[float] = None,
+    device: str = "cpu",
+    mutation_mode: str = "balanced",
+    seed: Optional[int] = None,
+    max_workers: int = 4
+) -> List[Dict[str, Any]]:
+    
+    oversample = n * 2
+    raw_cands = sample_candidates(seed_bp, n=oversample, seed=seed, mutation_mode=mutation_mode)
+    
+    with ThreadPoolExecutor(max_workers=max_workers) as executor:
+        evaluated_cands = list(executor.map(lambda c: evaluate_candidate(c, device), raw_cands))
 
-        # filter by params and latency if provided
-        if params_max is not None and est_params > params_max:
+    valid_cands = []
+    seen_hashes = set()
+
+    for cand in evaluated_cands:
+        if cand["hash"] in seen_hashes:
             continue
-        if latency_max_ms is not None and est_latency_ms is not None and est_latency_ms > latency_max_ms:
+        seen_hashes.add(cand["hash"])
+
+        if params_max is not None and cand["est_params"] > params_max:
             continue
+        if latency_max_ms is not None and cand["est_latency_ms"] > latency_max_ms:
+            continue
+        
+        valid_cands.append(cand)
+        if len(valid_cands) >= n:
+            break
+    
+    if not valid_cands:
+        def violation_score(c):
+            p_score = (c["est_params"] / params_max) if params_max else 0
+            l_score = (c["est_latency_ms"] / latency_max_ms) if latency_max_ms else 0
+            return p_score + l_score
+        
+        evaluated_cands.sort(key=violation_score)
+        return evaluated_cands[:n]
 
-        out.append(cand)
-    return out
-
-# small helper that wraps compute_flops util (if present)
-def compute_flops_from_blueprint(bp: Dict[str, Any]) -> int:
-    if not _HAS_FLOPS_UTIL:
-        raise RuntimeError("compute_flops unavailable")
-    # render model and compute flops
-    return compute_flops(bp, tuple(bp.get("input_shape", [3,32,32])))
+    return valid_cands

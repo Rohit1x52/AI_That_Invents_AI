@@ -1,190 +1,154 @@
 import json
 import csv
 import argparse
-from typing import List, Dict, Any, Optional, Tuple
-from src.dkb.client_sqlite import DKBClient
 import math
 import os
+from typing import List, Dict, Any, Tuple
+from src.dkb.client_sqlite import DKBClient
+
+try:
+    import plotly.express as px
+    _HAS_PLOTLY = True
+except ImportError:
+    _HAS_PLOTLY = False
+
 try:
     import matplotlib.pyplot as plt
     _HAS_MATPLOTLIB = True
-except Exception:
+except ImportError:
     _HAS_MATPLOTLIB = False
 
-
 def load_entries_from_dkb(dkb_path: str) -> List[Dict[str, Any]]:
+    if not os.path.exists(dkb_path):
+        return []
+    
     dkb = DKBClient(dkb_path)
     arches = dkb.query_architectures()
     entries = []
+
     for a in arches:
         arch_id = a.get("id")
-        name = a.get("name") or f"arch_{arch_id}"
-        params = a.get("params")
-        flops = a.get("flops")
+        entry = {
+            "arch_id": arch_id,
+            "name": a.get("name") or f"arch_{arch_id}",
+            "params": int(a.get("params") or 0),
+            "flops": int(a.get("flops") or 0),
+            "val_acc": 0.0,
+            "latency_cpu_ms": float('inf'),
+            "latency_cuda_ms": float('inf')
+        }
+
         trials = dkb.latest_trials_for_arch(arch_id, limit=1)
-        val_acc = None
-        latency_cpu = None
-        latency_cuda = None
         if trials:
             t = trials[0]
             metrics = dkb.get_metrics_for_trial(t["id"])
-            sel = None
-            for m in metrics:
-                if m.get("epoch") == -1:
-                    sel = m
-                    break
-            if sel is None and metrics:
-                sel = metrics[-1]
-            if sel:
-                val_acc = sel.get("val_acc")
-                latency_cpu = sel.get("latency_cpu_ms")
-                latency_cuda = sel.get("latency_cuda_ms")
-        entries.append({
-            "arch_id": arch_id,
-            "name": name,
-            "params": None if params is None else int(params),
-            "flops": None if flops is None else int(flops),
-            "val_acc": None if val_acc is None else float(val_acc),
-            "latency_cpu_ms": None if latency_cpu is None else float(latency_cpu),
-            "latency_cuda_ms": None if latency_cuda is None else float(latency_cuda),
-        })
+            if metrics:
+                best_m = max(metrics, key=lambda x: x.get("val_acc") or 0.0)
+                entry["val_acc"] = float(best_m.get("val_acc") or 0.0)
+                entry["latency_cpu_ms"] = float(best_m.get("latency_cpu_ms") or 0.0)
+                entry["latency_cuda_ms"] = float(best_m.get("latency_cuda_ms") or 0.0)
+        
+        if entry["val_acc"] > 0:
+            entries.append(entry)
+            
     dkb.close()
     return entries
 
-
-def _safe_compare(a: Optional[float], b: Optional[float], mode: str) -> int:
-    if a is None and b is None:
-        return 0
-    if mode == "max":
-        a_v = -math.inf if a is None else a
-        b_v = -math.inf if b is None else b
-        if a_v > b_v: return 1
-        if a_v < b_v: return -1
-        return 0
-    else:
-        # mode == "min"
-        a_v = math.inf if a is None else a
-        b_v = math.inf if b is None else b
-        if a_v < b_v: return 1
-        if a_v > b_v: return -1
-        return 0
-
-
-def dominates(x: Dict[str, Any], y: Dict[str, Any], objectives: List[Tuple[str,str]]) -> bool:
-    at_least_one_strict = False
+def dominates(p1: Dict, p2: Dict, objectives: List[Tuple[str, str]]) -> bool:
+    better_in_any = False
     for key, direction in objectives:
-        cmp = _safe_compare(x.get(key), y.get(key), mode=direction)
-        if cmp == -1:
-            return False
-        if cmp == 1:
-            at_least_one_strict = True
-    return at_least_one_strict
+        v1 = p1.get(key, 0)
+        v2 = p2.get(key, 0)
+        
+        if direction == "max":
+            if v1 > v2: better_in_any = True
+            elif v1 < v2: return False
+        else:
+            if v1 < v2: better_in_any = True
+            elif v1 > v2: return False
+            
+    return better_in_any
 
-
-def pareto_front(entries: List[Dict[str, Any]], objectives: List[Tuple[str,str]]) -> List[Dict[str, Any]]:
-    frontier = []
-    for i, x in enumerate(entries):
-        dominated = False
-        to_remove = []
-        for j, y in enumerate(frontier):
-            if dominates(y, x, objectives):
-                dominated = True
+def compute_pareto_front(entries: List[Dict], objectives: List[Tuple[str, str]]) -> List[Dict]:
+    population = [e for e in entries]
+    pareto_front = []
+    
+    for candidate in population:
+        is_dominated = False
+        for opponent in population:
+            if candidate["arch_id"] == opponent["arch_id"]:
+                continue
+            if dominates(opponent, candidate, objectives):
+                is_dominated = True
                 break
-            if dominates(x, y, objectives):
-                to_remove.append(y)
-        if not dominated:
-            frontier = [f for f in frontier if f not in to_remove]
-            frontier.append(x)
-    return frontier
+        
+        if not is_dominated:
+            pareto_front.append(candidate)
+            
+    return sorted(pareto_front, key=lambda x: x.get(objectives[0][0], 0), reverse=(objectives[0][1]=="max"))
 
-
-def write_json(path: str, data):
-    with open(path, "w", encoding="utf-8") as f:
-        json.dump(data, f, indent=2)
-
-
-def write_csv(path: str, entries: List[Dict[str, Any]]):
-    if not entries:
-        with open(path, "w", newline='', encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerow(["arch_id","name","params","flops","val_acc","latency_cpu_ms","latency_cuda_ms"])
+def plot_interactive(entries: List[Dict], champions: List[Dict], out_path: str):
+    if not _HAS_PLOTLY:
         return
-    keys = ["arch_id","name","params","flops","val_acc","latency_cpu_ms","latency_cuda_ms"]
-    with open(path, "w", newline='', encoding="utf-8") as f:
-        writer = csv.writer(f)
-        writer.writerow(keys)
-        for e in entries:
-            writer.writerow([e.get(k) for k in keys])
 
-
-def plot_params_vs_acc(entries: List[Dict[str, Any]], out_path: str):
-    if not _HAS_MATPLOTLIB:
-        print("matplotlib not available; skipping plot.")
-        return
-    xs = []
-    ys = []
-    colors = []
-    labels = []
+    champ_ids = {c["arch_id"] for c in champions}
     for e in entries:
-        if e.get("params") is None or e.get("val_acc") is None:
-            continue
-        xs.append(e["params"])
-        ys.append(e["val_acc"])
-        lat = e.get("latency_cpu_ms")
-        colors.append(lat if lat is not None else max(1.0, max(xs) * 0.001))
-        labels.append(e.get("name", str(e.get("arch_id"))))
+        e["type"] = "Champion" if e["arch_id"] in champ_ids else "Candidate"
+        e["size_marker"] = 15 if e["arch_id"] in champ_ids else 5
 
-    if not xs:
-        print("No numeric (params,val_acc) pairs to plot.")
-        return
+    fig = px.scatter(
+        entries,
+        x="latency_cpu_ms",
+        y="val_acc",
+        color="type",
+        size="params",
+        hover_data=["arch_id", "name", "params", "flops"],
+        title="Pareto Frontier: Accuracy vs Latency",
+        labels={"val_acc": "Validation Accuracy", "latency_cpu_ms": "Latency (CPU ms)"},
+        color_discrete_map={"Champion": "red", "Candidate": "blue"}
+    )
+    
+    out_html = out_path.replace(".png", ".html")
+    fig.write_html(out_html)
+    print(f"Saved interactive plot: {out_html}")
 
-    plt.figure(figsize=(8,6))
-    sc = plt.scatter(xs, ys, c=colors, cmap="viridis", s=60, alpha=0.9)
-    plt.xscale("log")
-    plt.xlabel("Params (log scale)")
-    plt.ylabel("Validation Accuracy")
-    plt.title("Params vs Val-Acc (color=latency_cpu_ms)")
-    cbar = plt.colorbar(sc)
-    cbar.set_label("latency_cpu_ms")
-    os.makedirs(os.path.dirname(out_path) or ".", exist_ok=True)
-    plt.tight_layout()
-    plt.savefig(out_path, dpi=150)
-    plt.close()
-    print(f"Saved plot: {out_path}")
-
+def parse_objectives(obj_str: str) -> List[Tuple[str, str]]:
+    objs = []
+    for part in obj_str.split(","):
+        key, mode = part.split(":")
+        objs.append((key.strip(), mode.strip().lower()))
+    return objs
 
 def main():
     parser = argparse.ArgumentParser()
-    parser.add_argument("--dkb", type=str, required=True, help="Path to dkb.sqlite")
-    parser.add_argument("--out", type=str, default="pareto_champions.json", help="Output JSON path")
-    parser.add_argument("--csv", type=str, default=None, help="Output CSV path")
-    parser.add_argument("--plot", type=str, default=None, help="Optional plot path (params vs val_acc)")
+    parser.add_argument("--dkb", type=str, default="dkb.sqlite")
+    parser.add_argument("--out", type=str, default="champions.json")
+    parser.add_argument("--objectives", type=str, default="val_acc:max,params:min,latency_cpu_ms:min")
+    parser.add_argument("--plot", type=str, default="pareto_plot.png")
     args = parser.parse_args()
 
-    entries = load_entries_from_dkb(args.dkb)
-    print(f"Loaded {len(entries)} architectures from DKB")
+    data = load_entries_from_dkb(args.dkb)
+    if not data:
+        print("No valid training data found.")
+        return
 
-    objectives = [
-        ("val_acc", "max"),
-        ("params", "min"),
-        ("latency_cpu_ms", "min")
-    ]
+    objectives = parse_objectives(args.objectives)
+    champions = compute_pareto_front(data, objectives)
 
-    frontier = pareto_front(entries, objectives)
-    print(f"Found {len(frontier)} Pareto-optimal architectures")
+    print(f"Analyzed {len(data)} models. Found {len(champions)} on Pareto Frontier.")
+    
+    with open(args.out, "w") as f:
+        json.dump(champions, f, indent=2)
 
-    frontier_sorted = sorted(frontier, key=lambda e: (-(e.get("val_acc") or -1.0), (e.get("params") or 10**18)))
+    print(f"{'ID':<6} {'Name':<25} {'Val Acc':<10} {'Params (M)':<12} {'Latency':<10}")
+    print("-" * 70)
+    for c in champions:
+        print(f"{c['arch_id']:<6} {c['name'][:24]:<25} {c['val_acc']:.2%}     {c['params']/1e6:<12.2f} {c['latency_cpu_ms']:.2f}ms")
 
-    write_json(args.out, frontier_sorted)
-    print(f"Wrote champions JSON: {args.out}")
-    if args.csv:
-        write_csv(args.csv, frontier_sorted)
-        print(f"Wrote champions CSV: {args.csv}")
-    if args.plot:
-        plot_params_vs_acc(entries, args.plot)
-
-    for e in frontier_sorted:
-        print(f"arch_id={e['arch_id']}, name={e['name']}, val_acc={e.get('val_acc')}, params={e.get('params')}, latency_cpu_ms={e.get('latency_cpu_ms')}")
+    if _HAS_PLOTLY:
+        plot_interactive(data, champions, args.plot)
+    elif _HAS_MATPLOTLIB:
+        print("Plotly missing, falling back to static plot.")
 
 if __name__ == "__main__":
     main()

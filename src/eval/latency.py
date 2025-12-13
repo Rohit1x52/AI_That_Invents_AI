@@ -1,66 +1,124 @@
-import time
 import torch
+import time
+import numpy as np
+from typing import Tuple, Dict, Optional, Union
 
-def measured_latency(model, input_shape, device="cpu", runs=50, warmup=10):
-    if device == "cuda" and not torch.cuda.is_available():
-        raise RuntimeError("CUDA not available on this machine.")
+def measure_latency_precise(
+    model: torch.nn.Module, 
+    input_shape: Tuple[int, ...], 
+    device: str = "cpu", 
+    runs: int = 100, 
+    warmup: int = 20
+) -> Dict[str, float]:
+    
+    if "cuda" in device and not torch.cuda.is_available():
+        return {"mean": -1.0, "std": 0.0, "p99": 0.0}
 
+    device = torch.device(device)
     model = model.to(device)
     model.eval()
-    inp = torch.randn((1, *input_shape), device=device)
 
-    # Warmup
+    input_tensor = torch.randn(1, *input_shape, device=device)
+
+    is_cuda = device.type == "cuda"
+    
     with torch.no_grad():
         for _ in range(warmup):
-            _ = model(inp)
-    if device.startswith("cuda"):
+            _ = model(input_tensor)
+    
+    if is_cuda:
         torch.cuda.synchronize()
+    
+    timings = []
 
-    times = []
+    start_event = torch.cuda.Event(enable_timing=True) if is_cuda else None
+    end_event = torch.cuda.Event(enable_timing=True) if is_cuda else None
+
     with torch.no_grad():
         for _ in range(runs):
-            start = time.time()
-            _ = model(inp)
-            if device.startswith("cuda"):
+            if is_cuda:
+                start_event.record()
+                _ = model(input_tensor)
+                end_event.record()
                 torch.cuda.synchronize()
-            times.append(time.time() - start)
+                timings.append(start_event.elapsed_time(end_event))
+            else:
+                start_t = time.perf_counter()
+                _ = model(input_tensor)
+                end_t = time.perf_counter()
+                timings.append((end_t - start_t) * 1000.0)
 
-    import statistics
-    return statistics.mean(times) * 1000.0  # return ms
+    timings = np.array(timings)
+    
+    return {
+        "mean": float(np.mean(timings)),
+        "median": float(np.median(timings)),
+        "std": float(np.std(timings)),
+        "min": float(np.min(timings)),
+        "max": float(np.max(timings)),
+        "p99": float(np.percentile(timings, 99))
+    }
 
+def benchmark_throughput(
+    model: torch.nn.Module,
+    input_shape: Tuple[int, ...],
+    batch_size: int = 32,
+    device: str = "cuda",
+    duration_sec: float = 5.0
+) -> float:
+    
+    if "cuda" in device and not torch.cuda.is_available():
+        return 0.0
 
-def measured_latency_device_list(model, input_shape, devices=("cpu", "cuda"),
-                                 runs=30, warmup=5):
-    results = {}
-    for d in devices:
-        try:
-            if d == "cuda" and not torch.cuda.is_available():
-                results[d] = None
-                continue
-            results[d] = measured_latency(
-                model, input_shape, device=d, runs=runs, warmup=warmup
-            )
-        except Exception:
-            results[d] = None
-    return results
+    device = torch.device(device)
+    model = model.to(device)
+    model.eval()
 
+    dummy_input = torch.randn(batch_size, *input_shape, device=device)
+    
+    # Warmup
+    for _ in range(5):
+        with torch.no_grad():
+            _ = model(dummy_input)
+    
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+        
+    start_time = time.perf_counter()
+    num_batches = 0
+    
+    while (time.perf_counter() - start_time) < duration_sec:
+        with torch.no_grad():
+            _ = model(dummy_input)
+        num_batches += 1
+        
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+        
+    total_time = time.perf_counter() - start_time
+    total_images = num_batches * batch_size
+    
+    return total_images / total_time
 
-def estimate_latency_theoretical(model, input_shape, device_peak_flops=None):
+def estimate_theoretical_latency(
+    model: torch.nn.Module, 
+    input_shape: Tuple[int, ...], 
+    device_flops: float
+) -> Optional[float]:
     try:
         from fvcore.nn import FlopCountAnalysis
-    except Exception:
-        print("fvcore required for theoretical latency computation.")
-        return None
-
-    import torch
-    model_cpu = model.cpu()
-    try:
+        
+        model_cpu = model.cpu()
         dummy = torch.randn(1, *input_shape)
-        flops = FlopCountAnalysis(model_cpu, dummy).total()
-        if device_peak_flops is None:
-            print("Pass device_peak_flops (e.g., 10e12 for 10TFLOPS)")
-            return None
-        return flops / float(device_peak_flops)
-    except Exception as e:
-        print("FLOPs analysis failed:", e)
+        
+        flops = FlopCountAnalysis(model_cpu, dummy)
+        flops.unsupported_ops_warnings(False)
+        total_flops = flops.total()
+        
+        latency_sec = total_flops / device_flops
+        return latency_sec * 1000.0
+        
+    except ImportError:
+        return None
+    except Exception:
         return None
