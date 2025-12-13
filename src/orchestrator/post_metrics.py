@@ -1,258 +1,221 @@
 import argparse
 import json
-import sqlite3
 import time
+import torch
+import gc
 import statistics
 from pathlib import Path
 from typing import Optional, Tuple, Dict, Any
 
-import torch
-
-# local imports (Phase-1)
+# Local imports
 try:
     from src.codegen.renderer import render_blueprint
-except Exception:
-    render_blueprint = None
+    from src.codegen.blueprint import Blueprint
+except ImportError:
+    print("[ERROR] Source modules not found. Ensure run from project root.")
+    exit(1)
 
-# local DKB client import (if present)
 try:
     from src.dkb.client_sqlite import DKBClient
-except Exception:
+except ImportError:
     DKBClient = None
 
+# --- Measurement Utilities ---
 
-def compute_num_params(model: torch.nn.Module) -> int:
-    return int(sum(p.numel() for p in model.parameters()))
-
-
-def compute_flops_fvcore(model: torch.nn.Module, input_shape: Tuple[int, ...]) -> Optional[int]:
+def compute_model_stats(model: torch.nn.Module, input_shape: Tuple[int, ...], device: str) -> Dict[str, Any]:
     """
-    Try computing FLOPs with fvcore FlopCountAnalysis.
-    Returns integer FLOPs or None if not available or fails.
+    Comprehensive hardware profiling: Params, FLOPs, Latency, Throughput, VRAM.
     """
+    stats = {}
+    
+    # 1. Parameter Count
+    stats["params"] = sum(p.numel() for p in model.parameters())
+    stats["trainable_params"] = sum(p.numel() for p in model.parameters() if p.requires_grad)
+
+    # 2. FLOPs (using fvcore or thop)
     try:
         from fvcore.nn import FlopCountAnalysis
-        model.eval()
-        with torch.no_grad():
-            inp = torch.randn((1, *input_shape), device=next(model.parameters()).device if any(p.requires_grad for p in model.parameters()) else "cpu")
-            flops = FlopCountAnalysis(model, inp)
-            total = flops.total()
-            # FlopCountAnalysis returns numbers like 1e9 as int-like or a torch int; coerce to int
-            return int(total)
-    except Exception:
-        return None
+        model_cpu = model.cpu()
+        dummy_cpu = torch.randn(1, *input_shape)
+        flops = FlopCountAnalysis(model_cpu, dummy_cpu)
+        flops.unsupported_ops_warnings(False)
+        stats["flops"] = int(flops.total())
+    except ImportError:
+        # Fallback approximation: Params * 20 (rough heuristic)
+        stats["flops"] = int(stats["params"] * 20)
+    except Exception as e:
+        print(f"[WARN] FLOPs calculation failed: {e}")
+        stats["flops"] = 0
 
-
-def compute_flops_fallback(est_params: int) -> int:
-    """
-    Crude fallback: estimate FLOPs from params using a simple multiplier.
-    This is intentionally conservative and fast.
-    """
-    # typical conv nets FLOPs roughly a few x params; choose 20 as placeholder
-    return int(max(0, est_params * 20))
-
-
-def measured_latency_ms(model: torch.nn.Module, input_shape: Tuple[int, ...], device: str = "cpu", runs: int = 50, warmup: int = 10) -> Optional[float]:
-    """
-    Measure average latency in milliseconds for one forward pass.
-    Returns mean latency in ms or None on failure.
-    """
-    try:
-        model.to(device)
-        model.eval()
-        inp = torch.randn((1, *input_shape), device=device)
-        # warmup
-        with torch.no_grad():
-            for _ in range(warmup):
-                _ = model(inp)
-            times = []
-            for _ in range(runs):
-                start = time.time()
-                _ = model(inp)
-                if device.startswith("cuda") and torch.cuda.is_available():
-                    torch.cuda.synchronize()
-                times.append(time.time() - start)
-        return float(statistics.mean(times) * 1000.0)
-    except Exception:
-        return None
-
-
-def update_architecture_row(dkb_path: str, arch_id: int, params: Optional[int], flops: Optional[int], summary: Optional[Dict[str, Any]]):
-    """
-    Update the architectures table with params, flops, and summary JSON.
-    """
-    conn = sqlite3.connect(dkb_path)
-    cur = conn.cursor()
-    updates = []
-    args = []
-    if params is not None:
-        updates.append("params = ?")
-        args.append(int(params))
-    if flops is not None:
-        updates.append("flops = ?")
-        args.append(int(flops))
-    if summary is not None:
-        updates.append("summary = ?")
-        args.append(json.dumps(summary))
-    if updates:
-        args.append(int(arch_id))
-        sql = f"UPDATE architectures SET {', '.join(updates)} WHERE id = ?"
-        cur.execute(sql, tuple(args))
-        conn.commit()
-    conn.close()
-
-
-def add_summary_metrics_to_trial(dkb_path: str, trial_id: int, val_acc: float, val_loss: float, latency_cpu_ms: Optional[float], latency_cuda_ms: Optional[float]):
-    """
-    Use DKBClient.add_metrics if available; otherwise insert directly into metrics table.
-    We use epoch = -1 for summary rows (same convention used in orchestrator).
-    """
-    if DKBClient is not None:
-        try:
-            dkb = DKBClient(dkb_path)
-            dkb.add_metrics(trial_id, epoch=-1, val_acc=val_acc, val_loss=val_loss, latency_cpu_ms=latency_cpu_ms, latency_cuda_ms=latency_cuda_ms)
-            dkb.close()
-            return
-        except Exception:
-            # fallback to direct SQL
-            pass
-
-    # fallback direct SQL insert
-    conn = sqlite3.connect(dkb_path)
-    cur = conn.cursor()
-    cur.execute(
-        "INSERT INTO metrics (trial_id, epoch, val_acc, val_loss, latency_cpu_ms, latency_cuda_ms) VALUES (?, ?, ?, ?, ?, ?)",
-        (trial_id, -1, float(val_acc), float(val_loss), latency_cpu_ms, latency_cuda_ms)
-    )
-    conn.commit()
-    conn.close()
-
-
-def load_model_from_blueprint(blueprint, device="cpu"):
-    if render_blueprint is None:
-        raise RuntimeError("render_blueprint not available (src.codegen.renderer missing)")
-    # If blueprint is passed as string (JSON), parse it
-    if isinstance(blueprint, str):
-        blueprint = json.loads(blueprint)
-    # If blueprint is a dict, convert to Blueprint object
-    if isinstance(blueprint, dict):
-        from src.codegen.blueprint import Blueprint
-        blueprint = Blueprint.from_dict(blueprint)
-    model = render_blueprint(blueprint)
+    # Move to target device for timing/memory
+    device = torch.device(device if torch.cuda.is_available() or device=="cpu" else "cpu")
     model.to(device)
     model.eval()
-    return model
+    
+    dummy_input = torch.randn(1, *input_shape, device=device)
 
+    # 3. Peak VRAM Usage
+    if device.type == "cuda":
+        torch.cuda.reset_peak_memory_stats(device)
+        with torch.no_grad():
+            _ = model(dummy_input)
+        stats["peak_mem_mb"] = torch.cuda.max_memory_allocated(device) / (1024 ** 2)
+    else:
+        stats["peak_mem_mb"] = 0.0
+
+    # 4. Precision Latency Measurement
+    latencies = []
+    warmup = 10
+    runs = 50
+    
+    # Warmup
+    with torch.no_grad():
+        for _ in range(warmup):
+            _ = model(dummy_input)
+    
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+        start_event = torch.cuda.Event(enable_timing=True)
+        end_event = torch.cuda.Event(enable_timing=True)
+        
+        with torch.no_grad():
+            for _ in range(runs):
+                start_event.record()
+                _ = model(dummy_input)
+                end_event.record()
+                torch.cuda.synchronize()
+                latencies.append(start_event.elapsed_time(end_event)) # Returns ms
+    else:
+        # CPU Timing
+        with torch.no_grad():
+            for _ in range(runs):
+                t0 = time.perf_counter()
+                _ = model(dummy_input)
+                latencies.append((time.perf_counter() - t0) * 1000.0)
+
+    stats["latency_mean"] = statistics.mean(latencies)
+    stats["latency_std"] = statistics.stdev(latencies) if len(latencies) > 1 else 0.0
+    
+    # 5. Throughput (Images / Sec)
+    # We use a larger batch size to saturate the GPU
+    batch_size = 32
+    try:
+        batch_input = torch.randn(batch_size, *input_shape, device=device)
+        with torch.no_grad():
+            t0 = time.perf_counter()
+            for _ in range(10): # Run 10 batches
+                _ = model(batch_input)
+            if device.type == "cuda": torch.cuda.synchronize()
+            total_time = time.perf_counter() - t0
+        stats["throughput_img_per_sec"] = (batch_size * 10) / total_time
+    except RuntimeError:
+        # OOM on large batch
+        stats["throughput_img_per_sec"] = 0.0
+
+    return stats
+
+# --- Main Logic ---
 
 def main():
-    p = argparse.ArgumentParser()
-    p.add_argument("--dkb", type=str, required=True, help="Path to dkb sqlite file")
-    p.add_argument("--arch_id", type=int, required=True, help="Architecture ID in architectures table to update")
-    p.add_argument("--trial_id", type=int, required=False, help="Trial ID to append metrics for (optional)")
-    p.add_argument("--blueprint", type=str, required=True, help="Path to blueprint JSON (used to render model)")
-    p.add_argument("--device", type=str, default="cpu", help="Device for latency measurement: cpu or cuda")
-    p.add_argument("--runs", type=int, default=50, help="Latency measurement runs")
-    p.add_argument("--warmup", type=int, default=10, help="Latency measurement warmup iterations")
-    args = p.parse_args()
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--dkb", type=str, required=True, help="Path to dkb.sqlite")
+    parser.add_argument("--arch_id", type=int, required=True, help="Architecture ID")
+    parser.add_argument("--trial_id", type=int, required=False, help="Trial ID to update")
+    parser.add_argument("--blueprint", type=str, required=True, help="Path to blueprint.json")
+    parser.add_argument("--device", type=str, default="cuda", help="cpu or cuda")
+    args = parser.parse_args()
 
-    dkb_path = args.dkb
-    arch_id = args.arch_id
-    trial_id = args.trial_id
-    blueprint_path = Path(args.blueprint)
-    device = args.device
-    runs = args.runs
-    warmup = args.warmup
+    # 1. Load Blueprint
+    bp_path = Path(args.blueprint)
+    if not bp_path.exists():
+        print(f"[ERROR] Blueprint not found: {bp_path}")
+        return
 
-    if not blueprint_path.exists():
-        raise FileNotFoundError(f"Blueprint JSON not found: {blueprint_path}")
-
-    blueprint = json.loads(blueprint_path.read_text())
-
-    print("Rendering model from blueprint...")
     try:
-        model = load_model_from_blueprint(blueprint, device=device)
+        bp_dict = json.loads(bp_path.read_text())
+        bp = Blueprint.from_dict(bp_dict)
     except Exception as e:
-        print("ERROR rendering blueprint -> model:", e)
-        raise
+        print(f"[ERROR] Invalid blueprint JSON: {e}")
+        return
 
-    print("Computing true number of parameters...")
+    # 2. Build Model
+    print(f"--- Profiling Arch {args.arch_id} ---")
     try:
-        true_params = compute_num_params(model)
+        model = render_blueprint(bp)
     except Exception as e:
-        print("Failed to compute params:", e)
-        true_params = None
+        print(f"[ERROR] Model build failed: {e}")
+        return
 
-    print("Attempting FLOPs calculation (fvcore)...")
-    true_flops = compute_flops_fvcore(model, tuple(blueprint.get("input_shape", [3, 32, 32])))
-    if true_flops is None:
-        print("fvcore not available or failed -> using fallback FLOPs estimator")
-        true_flops = compute_flops_fallback(true_params or 0)
+    # 3. Profile
+    # Check if requested device is actually available
+    target_device = args.device if torch.cuda.is_available() else "cpu"
+    print(f"Target Device: {target_device}")
 
-    print(f"Measured/estimated FLOPs: {true_flops}")
-
-    print(f"Measuring latency on device={device} (runs={runs}, warmup={warmup}) ...")
     try:
-        lat_ms = measured_latency_ms(model, tuple(blueprint.get("input_shape", [3, 32, 32])), device=device, runs=runs, warmup=warmup)
-    except Exception:
-        lat_ms = None
+        stats = compute_model_stats(model, bp.input_shape, target_device)
+        print(json.dumps(stats, indent=2))
+    except Exception as e:
+        print(f"[ERROR] Profiling crashed: {e}")
+        import traceback
+        traceback.print_exc()
+        return
+    finally:
+        # Cleanup VRAM
+        del model
+        gc.collect()
+        if torch.cuda.is_available():
+            torch.cuda.empty_cache()
 
-    # For CUDA case, also try GPU latency if device == 'cuda' but also measure cpu if possible
-    cpu_lat = None
-    cuda_lat = None
-    if device.startswith("cuda"):
-        cuda_lat = lat_ms
-        # optionally also measure CPU latency (move model temporarily)
-        try:
-            cpu_lat = measured_latency_ms(model, tuple(blueprint.get("input_shape", [3, 32, 32])), device="cpu", runs=max(10, runs//5), warmup=5)
-        except Exception:
-            cpu_lat = None
+    # 4. Update Database
+    if DKBClient:
+        with DKBClient(args.dkb) as dkb:
+            # Update Architecture Metadata (Static info)
+            conn = dkb._conn 
+            # Note: We access _conn directly for custom updates or add specific methods to DKBClient
+            # Ideally DKBClient should have update_architecture_stats method.
+            # Here is a direct update for brevity/compatibility with your schema:
+            
+            summary = {
+                "profiled_at": time.time(),
+                "metrics": stats
+            }
+            
+            conn.execute(
+                "UPDATE architectures SET params=?, flops=?, summary=? WHERE id=?",
+                (stats["params"], stats["flops"], json.dumps(summary), args.arch_id)
+            )
+            
+            # Update Trial Metrics (Dynamic info)
+            if args.trial_id:
+                # We check if we profiled on CPU or CUDA to fill the right column
+                lat_cpu = stats["latency_mean"] if target_device == "cpu" else None
+                lat_cuda = stats["latency_mean"] if target_device.startswith("cuda") else None
+                
+                # We insert a summary row (epoch=-1) or update existing
+                # Fetch existing val_acc to preserve it
+                existing = dkb.get_metrics_for_trial(args.trial_id)
+                val_acc = 0.0
+                val_loss = 0.0
+                if existing:
+                    # Get best
+                    best = max(existing, key=lambda x: x["val_acc"] or 0)
+                    val_acc = best["val_acc"]
+                    val_loss = best["val_loss"]
+
+                dkb.add_metrics(
+                    args.trial_id, 
+                    epoch=-1,
+                    metrics={
+                        "val_acc": val_acc,
+                        "val_loss": val_loss,
+                        "latency_cpu_ms": lat_cpu,
+                        "latency_cuda_ms": lat_cuda
+                    }
+                )
+            
+            print("[SUCCESS] Database updated.")
     else:
-        cpu_lat = lat_ms
-
-    # Build summary
-    summary = {
-        "true_params": true_params,
-        "true_flops": true_flops,
-        "latency_cpu_ms": cpu_lat,
-        "latency_cuda_ms": cuda_lat,
-        "measured_at": time.time(),
-    }
-
-    print("Updating DKB with true metrics...")
-    try:
-        update_architecture_row(dkb_path, arch_id, params=true_params, flops=true_flops, summary=summary)
-    except Exception as e:
-        print("Failed to update architectures table:", e)
-        raise
-
-    # Optionally append a summary metrics row to trial (epoch=-1)
-    if trial_id is not None:
-        # note: we don't have val_acc/val_loss here; set to 0.0 placeholders if not known
-        val_acc = 0.0
-        val_loss = 0.0
-        # try to read previous summary metrics from DKB metrics for this trial (if present), else leave 0.0
-        try:
-            if DKBClient is not None:
-                dkb = DKBClient(dkb_path)
-                # try to find latest metrics for trial_id
-                mets = dkb.get_metrics_for_trial(trial_id)
-                if mets:
-                    # prefer the last logged val_acc/val_loss if epoch -1 or highest epoch
-                    last = mets[-1]
-                    val_acc = float(last.get("val_acc", 0.0) or 0.0)
-                    val_loss = float(last.get("val_loss", 0.0) or 0.0)
-                dkb.close()
-        except Exception:
-            pass
-
-        try:
-            add_summary_metrics_to_trial(dkb_path, trial_id, val_acc=val_acc, val_loss=val_loss, latency_cpu_ms=cpu_lat, latency_cuda_ms=cuda_lat)
-        except Exception as e:
-            print("Warning: failed to insert summary metrics row:", e)
-
-    print("Post-metrics update complete. Summary:")
-    print(json.dumps(summary, indent=2))
-
+        print("[WARN] DKBClient missing, skipping DB update.")
 
 if __name__ == "__main__":
     main()

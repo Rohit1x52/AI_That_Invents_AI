@@ -1,23 +1,97 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
   "title": "ProblemSpec",
+  "description": "Defines the constraints and goals for an Architecture Search campaign.",
   "type": "object",
-  "required": ["task", "dataset", "target_device", "constraints", "objectives"],
+  "required": [
+    "task",
+    "dataset"
+  ],
   "properties": {
-    "task": { "type": "string" },
-    "dataset": { "type": "string" },
-    "target_device": { "type": "string" },
+    "task": {
+      "type": "string",
+      "enum": [
+        "classification",
+        "segmentation",
+        "detection",
+        "super_resolution"
+      ],
+      "default": "classification"
+    },
+    "dataset": {
+      "type": "string",
+      "minLength": 1
+    },
+    "input_shape": {
+      "type": "array",
+      "items": { "type": "integer" },
+      "minItems": 3,
+      "maxItems": 3,
+      "default": [3, 224, 224]
+    },
+    "target_device": {
+      "type": "string",
+      "enum": [
+        "cpu",
+        "cuda",
+        "mobile_v1",
+        "dsp"
+      ],
+      "default": "cuda"
+    },
     "constraints": {
       "type": "object",
       "properties": {
-        "latency_ms": { "type": "number" },
-        "params_max": { "type": "number" }
+        "params_max": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum number of parameters (e.g., 5000000)"
+        },
+        "flops_max": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum FLOPs count"
+        },
+        "latency_max_ms": {
+          "type": "number",
+          "minimum": 0,
+          "description": "Maximum inference latency in milliseconds"
+        },
+        "min_accuracy": {
+          "type": "number",
+          "minimum": 0.0,
+          "maximum": 1.0
+        }
       },
-      "required": ["latency_ms", "params_max"]
+      "additionalProperties": false
     },
     "objectives": {
       "type": "array",
-      "items": { "type": "string" }
+      "items": {
+        "type": "string",
+        "enum": [
+          "accuracy",
+          "latency",
+          "params",
+          "flops",
+          "training_time"
+        ]
+      },
+      "default": ["accuracy", "latency"],
+      "uniqueItems": true
+    },
+    "training_budget": {
+      "type": "object",
+      "properties": {
+        "epochs": { "type": "integer", "default": 50 },
+        "batch_size": { "type": "integer", "default": 64 },
+        "timeout_hours": { "type": "number", "default": 24 }
+      }
+    },
+    "search_strategy": {
+      "type": "string",
+      "enum": ["evolutionary", "random", "bayesian", "llm_guided"],
+      "default": "evolutionary"
     }
   }
 }

@@ -2,26 +2,35 @@ import json
 import os
 import time
 import random
+import logging
 from pathlib import Path
-from typing import Dict, Any
+from typing import Dict, Any, Optional
 
 import numpy as np
 import torch
+import torch.nn as nn
+import torch.optim as optim
+from torch.cuda.amp import GradScaler, autocast # Key for speedup
 
 try:
     import mlflow
     _MLFLOW = True
-except Exception:
+except ImportError:
     _MLFLOW = False
-    
-from src.codegen.blueprint import Blueprint
-from src.codegen.renderer import render_blueprint
-from src.codegen.validator import validate_blueprint_dict
-from src.eval.metrics import count_parameters
-from src.eval.latency import measured_latency_device_list
-from src.eval.flops_utils import compute_flops
 
-WORKSPACE_SCREENSHOT = "/mnt/data/744ed4e5-3a58-4991-bb3e-9c16d315b62f.png"
+# Local imports
+try:
+    from src.codegen.blueprint import Blueprint
+    from src.codegen.renderer import render_blueprint
+    from src.codegen.validator import validate_blueprint_dict
+    from src.eval.metrics import count_parameters
+    # We can lazily import these to avoid circular dependency issues
+except ImportError:
+    pass
+
+# Setup Logger
+logging.basicConfig(level=logging.INFO, format='[%(levelname)s] %(message)s')
+logger = logging.getLogger("trainer")
 
 def set_seed(seed: int):
     random.seed(seed)
@@ -29,224 +38,170 @@ def set_seed(seed: int):
     torch.manual_seed(seed)
     if torch.cuda.is_available():
         torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False # Slower but reproducible
 
-def save_run_config(log_dir: Path, cfg: Dict[str, Any]):
-    try:
-        log_dir.mkdir(parents=True, exist_ok=True)
-        with open(log_dir / "config.json", "w") as f:
-            json.dump(cfg, f, indent=2)
-    except Exception:
-        pass
-
-def train_one_model(cfg: Dict[str, Any]) -> Dict[str, Any]:
-    # Normalize cfg
-    cfg = dict(cfg)  # shallow copy
+def get_data_loaders(cfg: Dict, input_shape, num_classes):
+    """
+    Factory for data loaders. 
+    Supports 'synthetic' for fast NAS debugging and 'cifar10' for real proxy tasks.
+    """
     train_cfg = cfg.get("train", {})
     data_cfg = cfg.get("data", {})
-    device_str = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
-    device = torch.device(device_str)
-    log_dir = Path(cfg.get("log_dir", "./logs/exp")).expanduser()
-    seed = int(cfg.get("seed", 42))
-
-    # reproducibility
-    set_seed(seed)
-
-    # Save config for reproducibility
-    save_run_config(log_dir, cfg)
-
-    # MLflow run (optional)
-    if _MLFLOW:
-        mlflow.start_run()
-        mlflow.log_params({
-            "device": device_str,
-            "seed": seed,
-            "batch_size": train_cfg.get("batch_size"),
-            "epochs": train_cfg.get("epochs"),
-            "lr": train_cfg.get("lr"),
-        })
-
-    # Build blueprint & validate
-    bp_dict = cfg["blueprint"]
-    try:
-        validate_blueprint_dict(bp_dict, device="cpu")
-    except AssertionError as e:
-        raise RuntimeError(f"Blueprint validation failed: {e}")
-
-    bp = Blueprint.from_dict(bp_dict)
-    model = render_blueprint(bp)
-    model.to(device)
-
-    # Count params
-    params = count_parameters(model)
-
-    # Data loaders: synthetic fast default or CIFAR
-    use_synth = train_cfg.get("use_synthetic", True)
+    
     batch_size = int(train_cfg.get("batch_size", 128))
-    epochs = int(train_cfg.get("epochs", 3))
-    patience = int(train_cfg.get("patience", 3))
-    lr = float(train_cfg.get("lr", 0.01))
-
-    if use_synth:
-        # tiny synthetic dataset
+    use_synthetic = train_cfg.get("use_synthetic", False)
+    
+    if use_synthetic:
+        # Fast, fake data to test if architecture runs without crashing
         class SyntheticDataset(torch.utils.data.Dataset):
-            def __init__(self, n, shape, num_classes):
-                self.n = n
-                self.shape = shape
-                self.num_classes = num_classes
-            def __len__(self):
-                return self.n
+            def __init__(self, n): self.n = n
+            def __len__(self): return self.n
             def __getitem__(self, idx):
-                x = torch.randn(self.shape)
-                y = torch.randint(0, self.num_classes, (1,)).item()
-                return x, y
+                return torch.randn(*input_shape), torch.randint(0, num_classes, (1,)).item()
+        
+        train_loader = torch.utils.data.DataLoader(SyntheticDataset(2048), batch_size=batch_size)
+        val_loader = torch.utils.data.DataLoader(SyntheticDataset(512), batch_size=batch_size)
+        return train_loader, val_loader
 
-        train_ds = SyntheticDataset(2048, tuple(bp.input_shape), bp.num_classes)
-        val_ds = SyntheticDataset(512, tuple(bp.input_shape), bp.num_classes)
-        train_loader = torch.utils.data.DataLoader(train_ds, batch_size=batch_size, shuffle=True, num_workers=0)
-        val_loader = torch.utils.data.DataLoader(val_ds, batch_size=batch_size, shuffle=False, num_workers=0)
     else:
+        # Real Data (CIFAR-10 Example)
         import torchvision
         import torchvision.transforms as T
-        transform = T.Compose([T.ToTensor(), T.Normalize((0.5,0.5,0.5), (0.5,0.5,0.5))])
-        data_root = data_cfg.get("root", "./data")
-        trainset = torchvision.datasets.CIFAR10(root=data_root, train=True, download=True, transform=transform)
-        valset = torchvision.datasets.CIFAR10(root=data_root, train=False, download=True, transform=transform)
-        train_loader = torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=0)
-        val_loader = torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=0)
+        
+        # Standard augmentation for higher accuracy
+        stats = ((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010))
+        train_tfm = T.Compose([
+            T.RandomCrop(32, padding=4),
+            T.RandomHorizontalFlip(),
+            T.ToTensor(),
+            T.Normalize(*stats),
+        ])
+        val_tfm = T.Compose([T.ToTensor(), T.Normalize(*stats)])
+        
+        root = data_cfg.get("root", "./data")
+        trainset = torchvision.datasets.CIFAR10(root=root, train=True, download=True, transform=train_tfm)
+        valset = torchvision.datasets.CIFAR10(root=root, train=False, download=True, transform=val_tfm)
+        
+        return (
+            torch.utils.data.DataLoader(trainset, batch_size=batch_size, shuffle=True, num_workers=2, pin_memory=True),
+            torch.utils.data.DataLoader(valset, batch_size=batch_size, shuffle=False, num_workers=2, pin_memory=True)
+        )
 
-    # Optimizer / loss
-    criterion = torch.nn.CrossEntropyLoss()
-    optimizer = torch.optim.SGD(model.parameters(), lr=lr, momentum=0.9)
-
-    # Training loop with early stopping
-    best_val = -1.0
-    best_ckpt = None
-    counter = 0
-
+def train_one_model(cfg: Dict[str, Any]) -> Dict[str, Any]:
+    # 1. Setup
+    cfg = dict(cfg)
+    train_cfg = cfg.get("train", {})
+    log_dir = Path(cfg.get("log_dir", "./logs/exp")).expanduser()
     log_dir.mkdir(parents=True, exist_ok=True)
+    
+    seed = int(cfg.get("seed", 42))
+    set_seed(seed)
+    
+    device_str = cfg.get("device", "cuda" if torch.cuda.is_available() else "cpu")
+    device = torch.device(device_str)
+    
+    # Save run config
+    with open(log_dir / "config.json", "w") as f:
+        json.dump(cfg, f, indent=2)
 
-    total_steps = epochs * max(1, len(train_loader))
-    step = 0
-    for epoch in range(epochs):
-        model.train()
-        running_loss = 0.0
-        for images, labels in train_loader:
-            images, labels = images.to(device), labels.to(device)
-            optimizer.zero_grad()
-            outputs = model(images)
-            loss = criterion(outputs, labels)
-            loss.backward()
-            optimizer.step()
-            running_loss += float(loss.item())
-            step += 1
+    # 2. Build Model
+    bp_dict = cfg["blueprint"]
+    try:
+        bp = Blueprint.from_dict(bp_dict)
+        model = render_blueprint(bp)
+        model.to(device)
+    except Exception as e:
+        logger.error(f"Failed to build model: {e}")
+        # Return partial result indicating failure
+        return {"status": "FAILED", "error": str(e), "log_dir": str(log_dir)}
 
-        # validation
-        model.eval()
-        correct = 0
-        total = 0
-        val_loss = 0.0
-        with torch.no_grad():
-            for images, labels in val_loader:
-                images, labels = images.to(device), labels.to(device)
-                outputs = model(images)
-                val_loss += float(criterion(outputs, labels).item())
-                _, preds = outputs.max(1)
-                total += labels.size(0)
-                correct += preds.eq(labels).sum().item()
-        val_acc = (correct / total) if total > 0 else 0.0
+    # 3. Data & Optimizer
+    train_loader, val_loader = get_data_loaders(cfg, bp.input_shape, bp.num_classes)
+    
+    lr = float(train_cfg.get("lr", 0.05)) # Higher default for Cosine
+    epochs = int(train_cfg.get("epochs", 5))
+    
+    optimizer = optim.SGD(model.parameters(), lr=lr, momentum=0.9, weight_decay=5e-4)
+    scheduler = optim.lr_scheduler.CosineAnnealingLR(optimizer, T_max=epochs)
+    criterion = nn.CrossEntropyLoss()
+    
+    # Mixed Precision Scaler
+    scaler = GradScaler(enabled=(device.type == "cuda"))
 
-        # Print progress
-        avg_train_loss = running_loss / len(train_loader)
-        print(f"  Epoch {epoch+1}/{epochs} - train_loss: {avg_train_loss:.4f}, val_acc: {val_acc:.4f}")
+    # 4. Training Loop
+    best_acc = 0.0
+    best_ckpt = None
+    start_time = time.time()
+    
+    logger.info(f"Start Training: {epochs} epochs | {device_str} | AMP={device.type=='cuda'}")
 
-        # Log
-        if _MLFLOW:
-            mlflow.log_metric("val_acc", float(val_acc), step=epoch)
-            mlflow.log_metric("val_loss", float(val_loss), step=epoch)
-
-        # Checkpoint if improved
-        if val_acc > best_val:
-            best_val = val_acc
-            best_ckpt = str(log_dir / "best.pth")
-            try:
+    try:
+        for epoch in range(epochs):
+            model.train()
+            train_loss = 0.0
+            
+            for x, y in train_loader:
+                x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+                
+                optimizer.zero_grad(set_to_none=True)
+                
+                with autocast(enabled=(device.type == "cuda")):
+                    logits = model(x)
+                    loss = criterion(logits, y)
+                
+                scaler.scale(loss).backward()
+                
+                scaler.unscale_(optimizer)
+                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=5.0)
+                
+                scaler.step(optimizer)
+                scaler.update()
+                
+                train_loss += loss.item()
+            
+            scheduler.step()
+            
+            model.eval()
+            correct = 0
+            total = 0
+            val_loss = 0.0
+            
+            with torch.no_grad():
+                for x, y in val_loader:
+                    x, y = x.to(device, non_blocking=True), y.to(device, non_blocking=True)
+                    logits = model(x)
+                    val_loss += criterion(logits, y).item()
+                    _, preds = logits.max(1)
+                    correct += preds.eq(y).sum().item()
+                    total += y.size(0)
+            
+            val_acc = correct / total if total > 0 else 0.0
+            
+            logger.info(f"Epoch {epoch+1}: Loss={train_loss/len(train_loader):.3f} | Acc={val_acc:.2%}")
+            
+            if val_acc > best_acc:
+                best_acc = val_acc
+                best_ckpt = str(log_dir / "best_model.pth")
                 torch.save(model.state_dict(), best_ckpt)
-            except Exception as e:
-                # Do not fail training if save fails; warn instead
-                print("Warning: failed to save checkpoint:", e)
-            counter = 0
+    
+    except RuntimeError as e:
+        if "out of memory" in str(e):
+            logger.error("OOM Detected! Clearing cache.")
+            torch.cuda.empty_cache()
+            return {"status": "FAILED", "error": "OOM", "best_val_acc": 0.0}
         else:
-            counter += 1
-            if counter >= patience:
-                # early stop
-                print(f"  Early stopping at epoch {epoch+1}")
-                break
+            raise e
 
-    # After training: measure latency & FLOPs (best-effort)
-    try:
-        model_cpu = render_blueprint(bp)  # fresh model for CPU measurement to avoid device sync issues
-    except Exception:
-        model_cpu = model
-
-    latency_results = None
-    try:
-        latency_results = measured_latency_device_list(model_cpu, bp.input_shape, devices=("cpu", "cuda"))
-    except Exception:
-        latency_results = {"cpu": None, "cuda": None}
-
-    flops = None
-    try:
-        flops = compute_flops(model_cpu, tuple(bp.input_shape))
-    except Exception:
-        flops = None
-
-    # Log final metrics
-    result = {
-        "best_val_acc": float(best_val),
+    total_time = time.time() - start_time
+    params = sum(p.numel() for p in model.parameters())
+    
+    return {
+        "status": "COMPLETED",
+        "best_val_acc": float(best_acc),
+        "best_val_loss": float(val_loss),
         "best_checkpoint": best_ckpt,
-        "params": int(params),
-        "latency_ms": latency_results,
-        "flops": int(flops) if flops is not None else None,
-        "log_dir": str(log_dir),
-        "seed": seed
+        "params": params,
+        "train_time_sec": total_time,
+        "log_dir": str(log_dir)
     }
-
-    if _MLFLOW:
-        mlflow.log_metrics({"best_val_acc": float(best_val)})
-        # Optionally log artifacts
-        try:
-            if best_ckpt:
-                mlflow.log_artifact(best_ckpt)
-        except Exception:
-            pass
-        mlflow.end_run()
-
-    return result
-
-
-# CLI convenience
-def main():
-    import argparse
-    parser = argparse.ArgumentParser(prog="train_one_model")
-    parser.add_argument("--blueprint", type=str, default="examples/blueprints/blueprint_convnet.json")
-    parser.add_argument("--use_synthetic", action="store_true")
-    parser.add_argument("--epochs", type=int, default=3)
-    parser.add_argument("--batch_size", type=int, default=128)
-    parser.add_argument("--lr", type=float, default=0.01)
-    parser.add_argument("--device", type=str, default="cuda" if torch.cuda.is_available() else "cpu")
-    parser.add_argument("--log_dir", type=str, default="./logs/exp")
-    parser.add_argument("--seed", type=int, default=42)
-    args = parser.parse_args()
-
-    bp = json.load(open(args.blueprint))
-    cfg = {
-        "blueprint": bp,
-        "train": {"use_synthetic": args.use_synthetic, "epochs": args.epochs, "batch_size": args.batch_size, "lr": args.lr},
-        "device": args.device,
-        "log_dir": args.log_dir,
-        "seed": args.seed
-    }
-    res = train_one_model(cfg)
-    print("Run result:", res)
-
-if __name__ == "__main__":
-    main()

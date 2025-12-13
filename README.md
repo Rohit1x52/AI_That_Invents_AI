@@ -214,6 +214,55 @@ print(f"Parameters: {sum(p.numel() for p in model.parameters()):,}")
 
 ## 🏗️ Architecture
 
+### 🔄 System Workflow
+
+```mermaid
+graph TD
+    %% Styles
+    classDef user fill:#e1f5fe,stroke:#01579b,stroke-width:2px,color:#01579b;
+    classDef core fill:#fff3e0,stroke:#e65100,stroke-width:2px,color:#e65100;
+    classDef process fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#4a148c;
+    classDef storage fill:#e8f5e9,stroke:#1b5e20,stroke-width:2px,color:#1b5e20;
+
+    subgraph Input ["User Input"]
+        User([User / Config]):::user
+    end
+
+    subgraph Generation ["Generation Engine (src/generator)"]
+        Generator[Generator<br/>LLM / Heuristic]:::core
+        Filter[Filter<br/>Constraints Check]:::core
+    end
+
+    subgraph Orchestration ["Orchestration (src/orchestrator)"]
+        Orchestrator[Campaign Manager]:::core
+        Runner[Runner<br/>Local / Parallel]:::process
+    end
+
+    subgraph Core ["Core Pipeline (src/codegen, src/trainer)"]
+        Codegen[Codegen<br/>Blueprint → Model]:::core
+        Trainer[Trainer<br/>Training Loop]:::process
+        Evaluator[Evaluator<br/>Metrics & Latency]:::process
+    end
+
+    subgraph Storage ["Knowledge Base (src/dkb)"]
+        DKB[(DKB<br/>SQLite Database)]:::storage
+    end
+
+    %% Flow
+    User -->|Seed Blueprint| Generator
+    Generator -->|Candidates| Filter
+    Filter -->|Valid Blueprints| Orchestrator
+    Orchestrator -->|Dispatch Job| Runner
+    Runner -->|Blueprint| Codegen
+    Codegen -->|PyTorch Model| Trainer
+    Trainer -->|Trained Model| Evaluator
+    Evaluator -->|Metrics| DKB
+    DKB -.->|Feedback Loop| Generator
+
+    %% Link Styling
+    linkStyle default stroke:#333,stroke-width:1px;
+```
+
 ### Core Components
 
 #### 🎨 **Blueprint System**

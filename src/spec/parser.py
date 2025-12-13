@@ -1,18 +1,59 @@
 import json
-from jsonschema import validate, ValidationError
 from pathlib import Path
+from typing import Dict, Any, Optional
+from jsonschema import Draft7Validator, ValidationError
 
-SCHEMA_PATH = Path(__file__).parent / "spec_schema.json"
+DEFAULT_SCHEMA = {
+    "type": "object",
+    "properties": {
+        "task": {"type": "string"},
+        "dataset": {"type": "string"},
+        "objectives": {"type": "array", "default": ["accuracy", "latency"]},
+        "constraints": {
+            "type": "object", 
+            "default": {},
+            "properties": {
+                "max_params": {"type": "integer", "default": 5000000}
+            }
+        }
+    },
+    "required": ["task", "dataset"]
+}
 
-def load_schema():
-    return json.loads(SCHEMA_PATH.read_text())
+class SpecNormalizer:
+    def __init__(self, schema_path: Optional[str] = None):
+        self.schema = DEFAULT_SCHEMA
+        if schema_path:
+            p = Path(schema_path)
+            if p.exists():
+                try:
+                    self.schema = json.loads(p.read_text())
+                except Exception:
+                    pass
+        
+        self.validator = Draft7Validator(self.schema)
 
-def normalize_spec(raw_spec: dict):
-    # Basic normalization + validation
-    schema = load_schema()
-    validate(instance=raw_spec, schema=schema)
-    # fill defaults if needed (example)
-    spec = raw_spec.copy()
-    if "objectives" not in spec:
-        spec["objectives"] = ["top1_acc"]
-    return spec
+    def validate(self, spec: Dict[str, Any]) -> bool:
+        return self.validator.is_valid(spec)
+
+    def normalize(self, spec: Dict[str, Any]) -> Dict[str, Any]:
+        if not self.validator.is_valid(spec):
+            self.validator.validate(spec) 
+        
+        return self._inject_defaults(spec, self.schema)
+
+    def _inject_defaults(self, instance: Dict, schema: Dict) -> Dict:
+        if not isinstance(instance, dict):
+            return instance
+        
+        out = instance.copy()
+        
+        if "properties" in schema:
+            for prop, subschema in schema["properties"].items():
+                if prop not in out and "default" in subschema:
+                    out[prop] = subschema["default"]
+                
+                if prop in out and subschema.get("type") == "object":
+                    out[prop] = self._inject_defaults(out[prop], subschema)
+                    
+        return out
