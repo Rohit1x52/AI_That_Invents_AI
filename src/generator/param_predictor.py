@@ -114,3 +114,5 @@ rule_based_estimator = ParamPredictor()
 
 def rule_based_param_estimate(bp: Dict[str, Any]) -> int:
     return rule_based_estimator.estimate_params(bp)
+
+estimate_params = rule_based_param_estimate

@@ -6,9 +6,10 @@ from typing import Optional, Dict, Any, List, Union
 from pathlib import Path
 from contextlib import contextmanager
 
+# Enhanced Schema with DNA and Critic support
 SCHEMA = """
 PRAGMA foreign_keys = ON;
-PRAGMA journal_mode = WAL;  -- Better concurrency
+PRAGMA journal_mode = WAL;  -- Better concurrency for parallel workers
 
 CREATE TABLE IF NOT EXISTS architectures (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
@@ -17,7 +18,9 @@ CREATE TABLE IF NOT EXISTS architectures (
   created_at REAL DEFAULT (strftime('%s','now')),
   params INTEGER,
   flops INTEGER,
-  summary TEXT
+  summary TEXT,             -- General metadata
+  dna_json TEXT,            -- Genetic features (depth, width stats)
+  critic_json TEXT          -- LLM review scores
 );
 
 CREATE TABLE IF NOT EXISTS trials (
@@ -43,6 +46,16 @@ CREATE TABLE IF NOT EXISTS metrics (
   latency_cuda_ms REAL,
   created_at REAL DEFAULT (strftime('%s','now')),
   FOREIGN KEY(trial_id) REFERENCES trials(id)
+);
+
+CREATE TABLE IF NOT EXISTS genealogy (
+    id INTEGER PRIMARY KEY AUTOINCREMENT,
+    child_arch_id INTEGER NOT NULL,
+    parent_arch_id INTEGER,
+    mutation_type TEXT,
+    mutation_reason TEXT,
+    delta_dna TEXT,
+    created_at REAL
 );
 
 CREATE INDEX IF NOT EXISTS idx_arch_params ON architectures(params);
@@ -84,9 +97,13 @@ class DKBClient:
             self._conn.close()
             self._conn = None
 
+    # --- Architecture Management ---
+
     def add_architecture(self, name: str, blueprint_json: Dict, features: Optional[Dict] = None) -> int:
         self.connect()
         cur = self._conn.cursor()
+        
+        # Check for existence
         cur.execute("SELECT id FROM architectures WHERE name = ?", (name,))
         existing = cur.fetchone()
         if existing:
@@ -94,12 +111,52 @@ class DKBClient:
 
         bj = json.dumps(blueprint_json)
         feats = features or {}
+        
+        # Safely get summary if present
+        summary_str = feats.get("summary")
+        if isinstance(summary_str, dict):
+            summary_str = json.dumps(summary_str)
+
         cur.execute(
             "INSERT INTO architectures (name, blueprint_json, params, flops, summary) VALUES (?, ?, ?, ?, ?)",
-            (name, bj, feats.get("params"), feats.get("flops"), feats.get("summary"))
+            (name, bj, feats.get("params"), feats.get("flops"), summary_str)
         )
         self._conn.commit()
         return cur.lastrowid
+
+    def get_architecture(self, arch_id: int) -> Optional[Dict]:
+        self.connect()
+        cur = self._conn.cursor()
+        cur.execute("SELECT * FROM architectures WHERE id = ?", (arch_id,))
+        row = cur.fetchone()
+        if row:
+            d = dict(row)
+            # Parse JSON fields if they exist
+            if d.get("blueprint_json"): d["blueprint_json"] = json.loads(d["blueprint_json"])
+            if d.get("dna_json"): d["dna_json"] = json.loads(d["dna_json"])
+            if d.get("critic_json"): d["critic_json"] = json.loads(d["critic_json"])
+            return d
+        return None
+
+    def add_dna(self, arch_id: int, dna: dict):
+        """Stores the 'Genetic Code' features of the architecture."""
+        self.connect()
+        self._conn.execute(
+            "UPDATE architectures SET dna_json=? WHERE id=?",
+            (json.dumps(dna), arch_id)
+        )
+        self._conn.commit()
+
+    def add_critic_score(self, arch_id: int, critic: dict):
+        """Stores the LLM Critic's review and score."""
+        self.connect()
+        self._conn.execute(
+            "UPDATE architectures SET critic_json=? WHERE id=?",
+            (json.dumps(critic), arch_id)
+        )
+        self._conn.commit()
+
+    # --- Trial Management ---
 
     def add_trial(self, arch_id: int, run_id: str, config: Dict, start_ts: float = None) -> int:
         self.connect()
@@ -130,27 +187,42 @@ class DKBClient:
         self._conn.execute(query, tuple(params))
         self._conn.commit()
 
+    # --- Metrics Management ---
+
     def add_metrics(self, trial_id: int, epoch: int, metrics: Dict[str, float]):
         self.connect()
         cur = self._conn.cursor()
+        
+        # Insert raw metrics row
         cur.execute(
             """INSERT INTO metrics 
                (trial_id, epoch, val_acc, val_loss, latency_cpu_ms, latency_cuda_ms) 
                VALUES (?, ?, ?, ?, ?, ?)""",
-            (trial_id, epoch, metrics.get("val_acc"), metrics.get("val_loss"), 
-             metrics.get("latency_cpu_ms"), metrics.get("latency_cuda_ms"))
+            (
+                trial_id, 
+                epoch, 
+                metrics.get("val_acc"), 
+                metrics.get("val_loss"), 
+                metrics.get("latency_cpu_ms"), 
+                metrics.get("latency_cuda_ms")
+            )
         )
+        
+        # Auto-update the "High Score" on the trial row for fast leaderboards
         if metrics.get("val_acc"):
             cur.execute("""
                 UPDATE trials SET best_val_acc = MAX(best_val_acc, ?) WHERE id = ?
             """, (metrics["val_acc"], trial_id))
             
         self._conn.commit()
+        return cur.lastrowid
+
+    # --- Analytics & Reporting ---
 
     def get_leaderboard(self, limit: int = 10) -> List[Dict]:
         self.connect()
         query = """
-        SELECT a.name, a.params, a.flops, t.best_val_acc, t.status, t.id as trial_id
+        SELECT a.name, a.params, a.flops, t.best_val_acc, t.status, t.id as trial_id, a.critic_json
         FROM trials t
         JOIN architectures a ON t.arch_id = a.id
         WHERE t.status = 'COMPLETED'
@@ -164,16 +236,22 @@ class DKBClient:
     def get_pareto_candidates(self) -> List[Dict]:
         """
         Fetches data for plotting the Pareto Frontier (Accuracy vs Efficiency).
-        Returns [ {acc, params, flops, latency} ... ]
         """
         self.connect()
+        # We average latency across epochs/runs if multiple exist
         query = """
-        SELECT a.id, a.params, a.flops, t.best_val_acc, 
-               (SELECT AVG(latency_cpu_ms) FROM metrics m WHERE m.trial_id = t.id) as avg_latency
+        SELECT a.id, a.name, a.params, a.flops, t.best_val_acc, 
+               (SELECT AVG(latency_cpu_ms) FROM metrics m WHERE m.trial_id = t.id AND latency_cpu_ms IS NOT NULL) as avg_latency
         FROM trials t
         JOIN architectures a ON t.arch_id = a.id
-        WHERE t.best_val_acc > 0
+        WHERE t.best_val_acc > 0 AND t.status = 'COMPLETED'
         """
         cur = self._conn.cursor()
         cur.execute(query)
+        return [dict(r) for r in cur.fetchall()]
+
+    def get_metrics_for_trial(self, trial_id: int) -> List[Dict]:
+        self.connect()
+        cur = self._conn.cursor()
+        cur.execute("SELECT * FROM metrics WHERE trial_id = ? ORDER BY epoch ASC", (trial_id,))
         return [dict(r) for r in cur.fetchall()]

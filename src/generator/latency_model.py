@@ -113,3 +113,6 @@ def estimate_latency_from_blueprint(
         "est_params": int(params),
         "est_latency_ms": float(ms)
     }
+
+def flops_to_ms(flops: float, device: str = "cpu") -> float:
+    return calculate_theoretical_latency(flops, 0, 0, device)
